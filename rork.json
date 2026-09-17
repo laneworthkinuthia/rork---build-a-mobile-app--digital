@@ -1,0 +1,10 @@
+{
+  "apps": [
+    {
+      "name": "Cardex",
+      "path": "ios-cardex",
+      "framework": "swift"
+    }
+  ],
+  "$schema": "https://rork.com/schema/rork.json"
+}
