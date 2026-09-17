@@ -1,6 +1,9 @@
 import Foundation
 
-/// Seed content for the prototype. Real names, companies, cities and dates only.
+/// Development seed content for the prototype: a fixed cast of people, rooms
+/// and posts used ONLY to populate the local mock repositories on first
+/// launch. Nothing here is real user data, and a production backend replaces
+/// every call site. Do not extend the app's runtime logic from this file.
 nonisolated enum SampleData {
     static func makeOwner() -> BusinessCard {
         BusinessCard(
@@ -31,6 +34,54 @@ nonisolated enum SampleData {
                 )
             ]
         )
+    }
+
+    /// Development seed for the message inbox, used only by
+    /// LocalMessageRepository on first launch.
+    static func makeSeedMessages(ownerID: UUID) -> [Message] {
+        let contacts = makeContacts()
+        let sarah = contacts[0]
+        let daniel = contacts[1]
+        let tom = contacts[6]
+
+        return [
+            Message(
+                senderID: sarah.id,
+                recipientID: ownerID,
+                text: "Loved the rebrand sketch you showed me — still thinking about that type choice.",
+                sentAt: Date().addingTimeInterval(-3 * 3600)
+            ),
+            Message(
+                senderID: ownerID,
+                recipientID: sarah.id,
+                text: "Thanks! Rough night on the kerning, but it came together.",
+                sentAt: Date().addingTimeInterval(-2.7 * 3600)
+            ),
+            Message(
+                senderID: sarah.id,
+                recipientID: ownerID,
+                text: "Coffee next week? I'll bring the printed samples.",
+                sentAt: Date().addingTimeInterval(-2.4 * 3600)
+            ),
+            Message(
+                senderID: tom.id,
+                recipientID: ownerID,
+                text: "Sending over that analytics intro — worth a chat before Q4 planning.",
+                sentAt: Date().addingTimeInterval(-30 * 3600)
+            ),
+            Message(
+                senderID: daniel.id,
+                recipientID: ownerID,
+                text: "Your sync talk got me thinking — CRDTs or last-write-wins?",
+                sentAt: Date().addingTimeInterval(-20 * 3600)
+            ),
+            Message(
+                senderID: ownerID,
+                recipientID: daniel.id,
+                text: "Mostly LWW with tombstones. Conflicts are rare at our scale.",
+                sentAt: Date().addingTimeInterval(-19 * 3600)
+            )
+        ]
     }
 
     static func makeContacts() -> [BusinessCard] {

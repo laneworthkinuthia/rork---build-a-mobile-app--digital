@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Payment sheet for a ticketed event. Confirming buys the ticket and steps
-/// the user into the room.
+/// Payment sheet for a ticketed event. Confirming runs the purchase through
+/// the injected PaymentProcessing service (simulated in development — no real
+/// charge, no payment data collected) and steps the user into the room.
 struct TicketSheet: View {
     @Environment(CardexStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -9,6 +10,7 @@ struct TicketSheet: View {
     let roomID: UUID
     @State private var isProcessing = false
     @State private var isPurchased = false
+    @State private var errorMessage: String?
 
     private var room: Room? { store.rooms.first { $0.id == roomID } }
 
@@ -128,42 +130,47 @@ struct TicketSheet: View {
                         ProgressView()
                             .tint(.white)
                     } else {
-                        Image(systemName: "apple.logo")
-                            .font(.system(size: 15, weight: .semibold))
-                        Text("Pay \(room.priceLabel) with Apple Pay")
+                        Text("Buy ticket for \(room.priceLabel)")
                             .font(.system(size: 16, weight: .semibold))
                     }
                 }
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
                 .frame(height: 50)
-                .background(Color.black, in: .rect(cornerRadius: 14))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(Theme.hairline, lineWidth: 0.6)
-                }
+                .background(Theme.accent, in: .rect(cornerRadius: 14))
             }
             .buttonStyle(.pressable)
             .disabled(isProcessing)
             .padding(.horizontal, Theme.margin)
 
-            Text("Demo checkout — no real payment is made.")
-                .font(.system(size: 11))
-                .foregroundStyle(Theme.textTertiary)
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.warning)
+            } else {
+                Text("Simulated checkout for the prototype — no real payment is made.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+            }
         }
     }
 
     private func processPayment(_ room: Room) {
         isProcessing = true
+        errorMessage = nil
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.1))
-            store.purchaseTicket(room.id)
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
-            withAnimation(Theme.gentle) {
-                isProcessing = false
-                isPurchased = true
+            do {
+                try await store.purchaseTicket(room.id)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                withAnimation(Theme.gentle) {
+                    isProcessing = false
+                    isPurchased = true
+                }
+            } catch {
+                withAnimation(Theme.gentle) { isProcessing = false }
+                errorMessage = "The payment couldn't be completed. Please try again."
             }
         }
     }

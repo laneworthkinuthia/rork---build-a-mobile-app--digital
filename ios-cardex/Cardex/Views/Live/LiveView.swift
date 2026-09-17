@@ -18,12 +18,17 @@ struct LiveView: View {
             ZStack {
                 CanvasBackground()
 
-                if store.visibility == .dark {
-                    darkState
-                } else if let room = store.currentRoom {
-                    content(room: room)
-                } else {
-                    noRoomState
+                // Re-evaluates periodically so 24-hour stories disappear the
+                // moment they expire instead of lingering until the next
+                // navigation re-render.
+                TimelineView(.periodic(from: .now, by: 30)) { _ in
+                    if store.visibility == .dark {
+                        darkState
+                    } else if let room = store.currentRoom {
+                        content(room: room)
+                    } else {
+                        noRoomState
+                    }
                 }
             }
             .navigationBarHidden(true)
@@ -244,7 +249,7 @@ struct LiveView: View {
             EmptyStateView(
                 symbol: "door.left.hand.closed",
                 title: "You're not in a room",
-                message: "Join a nearby room from Discover to see who is networking around you."
+                message: "Join a room from Discover to see who is networking there."
             )
             Spacer(minLength: 0)
         }

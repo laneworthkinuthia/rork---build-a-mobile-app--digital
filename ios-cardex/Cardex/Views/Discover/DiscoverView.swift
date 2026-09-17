@@ -50,13 +50,9 @@ struct DiscoverView: View {
                             .padding(.horizontal, Theme.margin)
                         }
 
-                        SectionHeader(title: query.isEmpty ? "Nearby Rooms" : "Rooms") {
-                            HStack(spacing: 4) {
-                                Image(systemName: "location.fill").font(.system(size: 10))
-                                Text("London").font(.system(size: 14))
-                            }
-                            .foregroundStyle(Theme.textSecondary)
-                        }
+                        // Rooms are sample data for now; no location services
+                        // are used, so no proximity is implied.
+                        SectionHeader(title: "Rooms")
 
                         if rooms.isEmpty {
                             EmptyStateView(

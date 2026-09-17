@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 /// Single source of truth for the prototype: the owner's card, their rolodex,
 /// rooms, access requests and the feed.
@@ -28,9 +29,17 @@ final class CardexStore {
     private(set) var requests: [AccessRequest]
     private(set) var posts: [FeedPost]
     private(set) var activity: [ActivityItem]
-    private(set) var messages: [Message] = []
+    /// Message storage lives behind a repository so a backend can replace the
+    /// local development implementation without UI changes.
+    let messageRepository: any MessageRepository
+    /// Payment processing. Only the simulated processor exists today — it is
+    /// NOT a real payment provider (see PRODUCTION_READINESS.md).
+    let paymentProcessor: any PaymentProcessing
     /// Last time each thread was opened; incoming messages after this are unread.
     private(set) var readMarkers: [UUID: Date] = [:]
+    /// Tracked simulated-reply tasks so they can be cancelled and never
+    /// resurrect state for a removed relationship.
+    private var replyTasks: [UUID: Task<Void, Never>] = [:]
     /// People discoverable in rooms who are not yet in the rolodex.
     private(set) var discoverable: [BusinessCard]
     private(set) var pendingConnectionIDs: Set<UUID> = []
@@ -40,21 +49,51 @@ final class CardexStore {
     var rolodexSort: RolodexSort = .recent
     var hasCompletedOnboarding: Bool
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private let onboardingKey = "cardex.onboarded"
     private let ownerKey = "cardex.owner"
+    private let readMarkersKey = "cardex.readMarkers"
 
-    init() {
-        let seedOwner = SampleData.makeOwner()
-        let contacts = SampleData.makeContacts()
+    /// - Parameters:
+    ///   - defaults: Injected so tests and previews can isolate persistence.
+    ///   - messageRepository: Defaults to the local development repository.
+    ///   - paymentProcessor: Defaults to the simulated processor (no real charge).
+    init(
+        defaults: UserDefaults = .standard,
+        messageRepository: (any MessageRepository)? = nil,
+        paymentProcessor: (any PaymentProcessing)? = nil
+    ) {
+        self.defaults = defaults
 
-        if let data = UserDefaults.standard.data(forKey: ownerKey),
-           let stored = try? JSONDecoder().decode(BusinessCard.self, from: data) {
-            owner = stored
-        } else {
-            owner = seedOwner
+        // UI-test hooks: start from a clean slate, optionally skipping onboarding.
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("UITEST_RESET") {
+            defaults.removePersistentDomain(forName: Bundle.main.bundleIdentifier ?? "Cardex")
         }
-        hasCompletedOnboarding = UserDefaults.standard.bool(forKey: onboardingKey)
+
+        let loadedOwner: BusinessCard
+        if let data = defaults.data(forKey: ownerKey),
+           let stored = try? JSONDecoder().decode(BusinessCard.self, from: data) {
+            loadedOwner = stored
+        } else {
+            loadedOwner = SampleData.makeOwner()
+        }
+        owner = loadedOwner
+        hasCompletedOnboarding = defaults.bool(forKey: onboardingKey)
+        if arguments.contains("UITEST_SKIP_ONBOARDING") {
+            hasCompletedOnboarding = true
+            defaults.set(true, forKey: onboardingKey)
+        }
+
+        if let data = defaults.data(forKey: readMarkersKey),
+           let stored = try? JSONDecoder().decode([UUID: Date].self, from: data) {
+            readMarkers = stored
+        }
+
+        self.messageRepository = messageRepository ?? LocalMessageRepository(ownerID: loadedOwner.id)
+        self.paymentProcessor = paymentProcessor ?? SimulatedPaymentProcessor()
+
+        let contacts = SampleData.makeContacts()
 
         let sarah = contacts[0]
         let daniel = contacts[1]
@@ -173,46 +212,6 @@ final class CardexStore {
                 grantedTier: .publicTier
             )
         )
-
-        let ownerID = owner.id
-        messages = [
-            Message(
-                senderID: sarah.id,
-                recipientID: ownerID,
-                text: "Loved the rebrand sketch you showed me — still thinking about that type choice.",
-                sentAt: Date().addingTimeInterval(-3 * 3600)
-            ),
-            Message(
-                senderID: ownerID,
-                recipientID: sarah.id,
-                text: "Thanks! Rough night on the kerning, but it came together.",
-                sentAt: Date().addingTimeInterval(-2.7 * 3600)
-            ),
-            Message(
-                senderID: sarah.id,
-                recipientID: ownerID,
-                text: "Coffee next week? I'll bring the printed samples.",
-                sentAt: Date().addingTimeInterval(-2.4 * 3600)
-            ),
-            Message(
-                senderID: tom.id,
-                recipientID: ownerID,
-                text: "Sending over that analytics intro — worth a chat before Q4 planning.",
-                sentAt: Date().addingTimeInterval(-30 * 3600)
-            ),
-            Message(
-                senderID: daniel.id,
-                recipientID: ownerID,
-                text: "Your sync talk got me thinking — CRDTs or last-write-wins?",
-                sentAt: Date().addingTimeInterval(-20 * 3600)
-            ),
-            Message(
-                senderID: ownerID,
-                recipientID: daniel.id,
-                text: "Mostly LWW with tombstones. Conflicts are rare at our scale.",
-                sentAt: Date().addingTimeInterval(-19 * 3600)
-            )
-        ]
     }
 
     // MARK: - Derived state
@@ -261,7 +260,8 @@ final class CardexStore {
         return pool.first { $0.id == id }
     }
 
-    var roomsAttended: Int { rooms.filter { $0.membership == .joined }.count + 5 }
+    /// Real count of rooms the user is currently in — no fabricated padding.
+    var roomsAttended: Int { rooms.filter { $0.membership == .joined }.count }
 
     var sortedConnections: [Connection] {
         switch rolodexSort {
@@ -309,6 +309,9 @@ final class CardexStore {
     func isPending(_ card: BusinessCard) -> Bool {
         pendingConnectionIDs.contains(card.id)
     }
+
+    /// All stored messages, loaded through the message repository.
+    var messages: [Message] { messageRepository.messages }
 
     /// Message threads with connected people, most recently active first.
     var conversations: [Conversation] {
@@ -374,6 +377,8 @@ final class CardexStore {
         connections[index].note = note
     }
 
+    /// Removes a connection and tears down everything tied to the
+    /// relationship: messages, requests, pending state and read markers.
     func removeConnection(_ connectionID: UUID) {
         guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
         let card = connections[index].card
@@ -381,36 +386,54 @@ final class CardexStore {
         if !discoverable.contains(where: { $0.id == card.id }) {
             discoverable.append(card)
         }
+
+        // Relationship cleanup — nothing about this person may linger.
+        pendingConnectionIDs.remove(card.id)
+        readMarkers[card.id] = nil
+        persistReadMarkers()
+        replyTasks[card.id]?.cancel()
+        replyTasks[card.id] = nil
+        requests.removeAll { $0.card.id == card.id }
+        messageRepository.removeMessages(with: card.id)
     }
 
-    /// Sends an in-app message to a connection. A short reply follows so
-    /// receiving works in the prototype.
+    /// Sends an in-app message to a connection. In the development build a
+    /// simulated reply follows; a real backend would deliver incoming messages.
     func sendMessage(_ text: String, to cardID: UUID) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, connection(for: cardID) != nil else { return }
-        messages.append(Message(senderID: owner.id, recipientID: cardID, text: trimmed))
-        scheduleReply(from: cardID)
+        messageRepository.add(Message(senderID: owner.id, recipientID: cardID, text: trimmed))
+        scheduleSimulatedReply(from: cardID)
     }
 
     /// Marks a thread as read so its unread badge clears once opened.
     func markThreadRead(_ cardID: UUID) {
         readMarkers[cardID] = Date()
+        persistReadMarkers()
     }
 
-    private func scheduleReply(from cardID: UUID) {
-        let replies = [
-            "Good thinking — let's pick this up at the next mixer.",
-            "Makes sense. I'll send something over later today.",
-            "Ha, that's exactly what I was about to say.",
-            "Sounds good — Thursday works for me.",
-            "Just saw this. Free for a quick call tomorrow?"
-        ]
-        Task { [weak self] in
+    /// Development simulation only: schedules one canned reply through the
+    /// local mock repository. Never runs against a real repository, is tracked
+    /// so it can be cancelled, and re-validates the relationship before
+    /// appending so the task cannot resurrect state for a removed connection.
+    private func scheduleSimulatedReply(from cardID: UUID) {
+        guard let repository = messageRepository as? LocalMessageRepository else { return }
+        replyTasks[cardID]?.cancel()
+        replyTasks[cardID] = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.6))
-            guard let self else { return }
-            self.messages.append(
-                Message(senderID: cardID, recipientID: self.owner.id, text: replies.randomElement() ?? "Sounds good!")
-            )
+            guard !Task.isCancelled, let self else { return }
+            defer { self.replyTasks[cardID] = nil }
+            guard self.connection(for: cardID) != nil else { return }
+            self.messageRepository.add(repository.makeSimulatedReply(from: cardID))
+        }
+    }
+
+    private func persistReadMarkers() {
+        do {
+            let data = try JSONEncoder().encode(readMarkers)
+            defaults.set(data, forKey: readMarkersKey)
+        } catch {
+            Log.persistence.error("Failed to persist read markers: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -431,7 +454,8 @@ final class CardexStore {
             metAt: place,
             metOn: Date(),
             origin: .exchange,
-            grantedTier: card.visibility == .privateMode ? .publicTier : .connected
+            // What they share can never exceed their own visibility ceiling.
+            grantedTier: .connected.clamped(by: card.visibility.maxShareableTier)
         )
         connections.insert(connection, at: 0)
         discoverable.removeAll { $0.id == card.id }
@@ -442,9 +466,16 @@ final class CardexStore {
         return connection
     }
 
-    /// Asks a contact to unlock more of their card.
+    /// Asks a contact to unlock more of their card. Duplicate pending
+    /// requests are collapsed so repeated taps cannot stack requests.
     func requestAccess(from connectionID: UUID, tier: AccessTier = .trusted) {
         guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
+        guard !connections[index].accessRequestPending,
+              !requests.contains(where: {
+                  $0.card.id == connections[index].card.id
+                      && $0.direction == .outgoing
+                      && $0.status == .pending
+              }) else { return }
         connections[index].accessRequestPending = true
         let card = connections[index].card
         requests.insert(
@@ -472,6 +503,8 @@ final class CardexStore {
         }
         guard !hasPending, !isConnected(card) else { return }
 
+        // Only ask for what their privacy settings could actually grant.
+        let tier = tier.clamped(by: card.visibility.maxShareableTier)
         let place = currentRoom?.name ?? "Cardex"
         if let existing = connection(for: card.id) {
             if let index = connections.firstIndex(where: { $0.id == existing.id }) {
@@ -534,9 +567,12 @@ final class CardexStore {
     }
 
     /// Simulates the card owner approving the user's outgoing request.
+    /// The grant is clamped to the ceiling of the contact's own visibility
+    /// mode — they can never share beyond it (client-side only; a production
+    /// backend must enforce this authoritatively).
     func grantTier(_ tier: AccessTier, to connectionID: UUID) {
         guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
-        connections[index].grantedTier = tier
+        connections[index].grantedTier = tier.clamped(by: connections[index].card.visibility.maxShareableTier)
         connections[index].accessRequestPending = false
     }
 
@@ -559,13 +595,22 @@ final class CardexStore {
         }
     }
 
-    /// Pays for a ticketed event and steps inside.
-    func purchaseTicket(_ roomID: UUID) {
+    /// Pays for a ticketed event through the configured payment processor and
+    /// steps inside. The default processor is a simulation — no real charge is
+    /// made and no payment data is collected (see PRODUCTION_READINESS.md).
+    func purchaseTicket(_ roomID: UUID) async throws {
         guard let index = rooms.firstIndex(where: { $0.id == roomID }),
               rooms[index].access == .ticketed,
               rooms[index].membership != .joined else { return }
+        let price = rooms[index].ticketPrice ?? 0
         let name = rooms[index].name
-        joinRoom(at: index, remotely: false)
+
+        try await paymentProcessor.processTicketPurchase(amount: price, currency: "GBP", event: name)
+
+        // Re-resolve after the await: state may have changed during payment.
+        guard let currentIndex = rooms.firstIndex(where: { $0.id == roomID }),
+              rooms[currentIndex].membership != .joined else { return }
+        joinRoom(at: currentIndex, remotely: false)
         activity.insert(
             ActivityItem(card: owner, kind: .ticketPurchased, detail: name, date: Date()),
             at: 0
@@ -689,8 +734,12 @@ final class CardexStore {
     // MARK: - Persistence
 
     private func persistOwner() {
-        guard let data = try? JSONEncoder().encode(owner) else { return }
-        defaults.set(data, forKey: ownerKey)
+        do {
+            let data = try JSONEncoder().encode(owner)
+            defaults.set(data, forKey: ownerKey)
+        } catch {
+            Log.persistence.error("Failed to persist owner card: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private static func date(year: Int, month: Int, day: Int) -> Date {

@@ -126,6 +126,45 @@ nonisolated struct StoryUpdate: Identifiable, Hashable, Codable {
         self.imageData = imageData
     }
 
+    /// Storage for user-picked story photos. Injectable for tests.
+    nonisolated(unsafe) static var mediaStore: any MediaStoring = FileMediaStore()
+
+    // MARK: - Codable
+
+    // Story photo blobs are stored on disk via MediaStoring, never inside the
+    // JSON payload. The legacy inline-blob format is still decoded.
+
+    private enum CodingKeys: String, CodingKey {
+        case id, imageName, caption, postedAt
+        case imageReference, imageData
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        imageName = try container.decode(String.self, forKey: .imageName)
+        caption = try container.decode(String.self, forKey: .caption)
+        postedAt = try container.decode(Date.self, forKey: .postedAt)
+
+        if let reference = try container.decodeIfPresent(String.self, forKey: .imageReference),
+           let data = Self.mediaStore.loadData(forReference: reference) {
+            imageData = data
+        } else {
+            imageData = try container.decodeIfPresent(Data.self, forKey: .imageData)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(imageName, forKey: .imageName)
+        try container.encode(caption, forKey: .caption)
+        try container.encode(postedAt, forKey: .postedAt)
+        if let imageData, let reference = Self.mediaStore.store(imageData, forKey: "story-\(id.uuidString)") {
+            try container.encode(reference, forKey: .imageReference)
+        }
+    }
+
     var isActive: Bool { Date().timeIntervalSince(postedAt) < 24 * 3600 }
 
     var remainingLabel: String {
@@ -153,6 +192,9 @@ nonisolated struct BusinessCard: Identifiable, Hashable, Codable {
     var stories: [StoryUpdate]
     /// Camera or library photo chosen by the user; wins over the bundled asset.
     var photoData: Data?
+
+    /// Storage for user-picked photos. Injectable so tests can isolate disk IO.
+    nonisolated(unsafe) static var mediaStore: any MediaStoring = FileMediaStore()
 
     init(
         id: UUID = UUID(),
@@ -188,6 +230,66 @@ nonisolated struct BusinessCard: Identifiable, Hashable, Codable {
         self.visibility = visibility
         self.stories = stories
         self.photoData = photoData
+    }
+
+    // MARK: - Codable
+
+    // Photo blobs are stored on disk via MediaStoring, never inside the JSON
+    // payload (which lives in UserDefaults). The legacy inline-blob format is
+    // still decoded so previously persisted cards keep working.
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, title, company, industry, tagline, location, photoName, palette
+        case monogram, details, credentials, skills, visibility, stories
+        case photoReference, photoData
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        title = try container.decode(String.self, forKey: .title)
+        company = try container.decode(String.self, forKey: .company)
+        industry = try container.decode(String.self, forKey: .industry)
+        tagline = try container.decode(String.self, forKey: .tagline)
+        location = try container.decode(String.self, forKey: .location)
+        photoName = try container.decode(String.self, forKey: .photoName)
+        palette = try container.decode(CardPalette.self, forKey: .palette)
+        monogram = try container.decode(String.self, forKey: .monogram)
+        details = try container.decode([ContactDetail].self, forKey: .details)
+        credentials = try container.decode([String].self, forKey: .credentials)
+        skills = try container.decode([String].self, forKey: .skills)
+        visibility = try container.decode(VisibilityMode.self, forKey: .visibility)
+        stories = try container.decode([StoryUpdate].self, forKey: .stories)
+
+        if let reference = try container.decodeIfPresent(String.self, forKey: .photoReference),
+           let data = Self.mediaStore.loadData(forReference: reference) {
+            photoData = data
+        } else {
+            photoData = try container.decodeIfPresent(Data.self, forKey: .photoData)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(title, forKey: .title)
+        try container.encode(company, forKey: .company)
+        try container.encode(industry, forKey: .industry)
+        try container.encode(tagline, forKey: .tagline)
+        try container.encode(location, forKey: .location)
+        try container.encode(photoName, forKey: .photoName)
+        try container.encode(palette, forKey: .palette)
+        try container.encode(monogram, forKey: .monogram)
+        try container.encode(details, forKey: .details)
+        try container.encode(credentials, forKey: .credentials)
+        try container.encode(skills, forKey: .skills)
+        try container.encode(visibility, forKey: .visibility)
+        try container.encode(stories, forKey: .stories)
+        if let photoData, let reference = Self.mediaStore.store(photoData, forKey: "card-\(id.uuidString)-photo") {
+            try container.encode(reference, forKey: .photoReference)
+        }
     }
 
     /// True when the card shows a monogram avatar instead of a photo.

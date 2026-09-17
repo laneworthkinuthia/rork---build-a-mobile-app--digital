@@ -14,6 +14,18 @@ struct PhotoSourceSheet: View {
 
     private var isCameraAvailable = UIImagePickerController.isSourceTypeAvailable(.camera)
 
+    /// Explicit init: the synthesized memberwise initializer is private
+    /// (private stored properties), which breaks @testable builds.
+    init(
+        showsAvatarOption: Bool = true,
+        onPhoto: @escaping (Data) -> Void,
+        onAvatar: @escaping () -> Void = {}
+    ) {
+        self.showsAvatarOption = showsAvatarOption
+        self.onPhoto = onPhoto
+        self.onAvatar = onAvatar
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 10) {

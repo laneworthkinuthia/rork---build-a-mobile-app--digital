@@ -1,41 +1,123 @@
-//
-//  CardexUITests.swift
-//  CardexUITests
-//
-//  Created by Rork on September 15, 2026.
-//
-
 import XCTest
 
+/// End-to-end UI flows. Every test starts from a clean slate via the
+/// `UITEST_RESET` launch argument; `UITEST_SKIP_ONBOARDING` lands directly in
+/// the tab shell where onboarding is not the subject under test.
 final class CardexUITests: XCTestCase {
 
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it's important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testAllTabsNavigateToTheirScreens() {
         let app = XCUIApplication()
+        app.launchArguments = ["UITEST_RESET", "UITEST_SKIP_ONBOARDING"]
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
+        let tabBar = app.tabBars.firstMatch
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 10), "Main tab bar did not appear")
+
+        for label in ["Discover", "Live", "Feed", "Profile"] {
+            let tab = tabBar.buttons[label]
+            XCTAssertTrue(tab.waitForExistence(timeout: 5), "\(label) tab missing")
+            tab.tap()
+            XCTAssertTrue(
+                app.staticTexts[label].waitForExistence(timeout: 5),
+                "\(label) screen did not load"
+            )
+        }
     }
 
     @MainActor
-    func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
-        }
+    func testOnboardingCompletesToMainApp() {
+        let app = XCUIApplication()
+        app.launchArguments = ["UITEST_RESET"]
+        app.launch()
+
+        let create = app.buttons["Create My Card"]
+        XCTAssertTrue(create.waitForExistence(timeout: 10), "Onboarding welcome step missing")
+        create.tap()
+
+        // Photo step — the default avatar is fine, just continue.
+        let photoContinue = app.buttons["Continue"]
+        XCTAssertTrue(photoContinue.waitForExistence(timeout: 5))
+        photoContinue.tap()
+
+        // Identity step — name is required before continuing.
+        let nameField = app.textFields.firstMatch
+        XCTAssertTrue(nameField.waitForExistence(timeout: 5), "Identity form missing")
+        nameField.tap()
+        nameField.typeText("Ada Lovelace")
+        app.buttons["Continue"].tap()
+
+        // Design step.
+        XCTAssertTrue(app.buttons["Continue"].waitForExistence(timeout: 5))
+        app.buttons["Continue"].tap()
+
+        // Privacy step — finishing lands in the main app.
+        let finish = app.buttons["Finish"]
+        XCTAssertTrue(finish.waitForExistence(timeout: 5))
+        finish.tap()
+
+        XCTAssertTrue(
+            app.tabBars.firstMatch.waitForExistence(timeout: 10),
+            "Onboarding did not reach the main app"
+        )
+    }
+
+    @MainActor
+    func testSendMessageFromInbox() {
+        let app = XCUIApplication()
+        app.launchArguments = ["UITEST_RESET", "UITEST_SKIP_ONBOARDING"]
+        app.launch()
+
+        let tabBar = app.tabBars.firstMatch
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 10))
+        tabBar.buttons["Profile"].tap()
+
+        let messagesRow = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Messages'")).firstMatch
+        XCTAssertTrue(messagesRow.waitForExistence(timeout: 5), "Messages row missing from Profile")
+        messagesRow.tap()
+
+        // Seeded thread with a connection.
+        let thread = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Okafor'")).firstMatch
+        XCTAssertTrue(thread.waitForExistence(timeout: 5), "Seeded conversation missing from inbox")
+        thread.tap()
+
+        let field = app.textViews.firstMatch
+        let fallbackField = app.textFields.firstMatch
+        let input = field.waitForExistence(timeout: 3) ? field : fallbackField
+        XCTAssertTrue(input.exists, "Message input missing")
+        input.tap()
+        input.typeText("Hello from the UI test")
+
+        let send = app.buttons["Send message"]
+        XCTAssertTrue(send.waitForExistence(timeout: 5), "Send button missing")
+        send.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["Hello from the UI test"].waitForExistence(timeout: 5),
+            "Sent message did not appear in the thread"
+        )
+    }
+
+    @MainActor
+    func testMyRoomsOpensFromCardsStatTile() {
+        let app = XCUIApplication()
+        app.launchArguments = ["UITEST_RESET", "UITEST_SKIP_ONBOARDING"]
+        app.launch()
+
+        let tabBar = app.tabBars.firstMatch
+        XCTAssertTrue(tabBar.waitForExistence(timeout: 10))
+
+        let roomsTile = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Rooms'")).firstMatch
+        XCTAssertTrue(roomsTile.waitForExistence(timeout: 5), "Rooms stat tile missing on Cards")
+        roomsTile.tap()
+
+        XCTAssertTrue(
+            app.navigationBars["My Rooms"].waitForExistence(timeout: 5),
+            "My Rooms screen did not open"
+        )
     }
 }

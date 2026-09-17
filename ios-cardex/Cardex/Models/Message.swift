@@ -1,7 +1,7 @@
 import Foundation
 
 /// A single message exchanged with a connection in the in-app inbox.
-nonisolated struct Message: Identifiable, Hashable {
+nonisolated struct Message: Identifiable, Hashable, Codable {
     let id: UUID
     let senderID: UUID
     let recipientID: UUID
