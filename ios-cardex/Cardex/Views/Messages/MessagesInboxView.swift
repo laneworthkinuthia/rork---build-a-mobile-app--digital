@@ -78,6 +78,7 @@ struct MessagesInboxView: View {
             .contentShape(.rect)
         }
         .buttonStyle(.pressable)
+        .accessibilityIdentifier("inbox-row")
     }
 
     private func preview(for conversation: Conversation) -> String {

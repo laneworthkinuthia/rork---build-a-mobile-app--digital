@@ -76,12 +76,20 @@ final class CardexUITests: XCTestCase {
         XCTAssertTrue(tabBar.waitForExistence(timeout: 10))
         tabBar.buttons["Profile"].tap()
 
-        let messagesRow = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Messages'")).firstMatch
+        let messagesRow = app.buttons["profile-messages-row"]
         XCTAssertTrue(messagesRow.waitForExistence(timeout: 5), "Messages row missing from Profile")
+        // The row is below the fold — scroll it into view or the tap lands
+        // on whatever happens to be at its off-screen coordinates.
+        var swipes = 0
+        while !messagesRow.isHittable && swipes < 4 {
+            app.swipeUp(velocity: .fast)
+            swipes += 1
+        }
+        XCTAssertTrue(messagesRow.isHittable, "Messages row never became tappable")
         messagesRow.tap()
 
-        // Seeded thread with a connection.
-        let thread = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Okafor'")).firstMatch
+        // Seeded thread with a connection (Sarah Okafor).
+        let thread = app.buttons["inbox-row"]
         XCTAssertTrue(thread.waitForExistence(timeout: 5), "Seeded conversation missing from inbox")
         thread.tap()
 

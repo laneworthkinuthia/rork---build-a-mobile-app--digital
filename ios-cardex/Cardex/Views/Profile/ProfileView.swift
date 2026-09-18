@@ -130,7 +130,8 @@ struct ProfileView: View {
                 symbol: "bubble.left.and.bubble.right.fill",
                 title: "Messages",
                 caption: "Chat with people you've met",
-                badge: store.unreadMessageCount == 0 ? nil : "\(store.unreadMessageCount)"
+                badge: store.unreadMessageCount == 0 ? nil : "\(store.unreadMessageCount)",
+                identifier: "profile-messages-row"
             ) { path.append(.messages) }
 
             Divider().overlay(Theme.hairline).padding(.leading, 66)
@@ -151,6 +152,7 @@ struct ProfileView: View {
         title: String,
         caption: String,
         badge: String?,
+        identifier: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -191,6 +193,7 @@ struct ProfileView: View {
             .contentShape(.rect)
         }
         .buttonStyle(.pressable)
+        .accessibilityIdentifier(identifier ?? "")
     }
 }
 

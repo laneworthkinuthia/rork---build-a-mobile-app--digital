@@ -180,7 +180,9 @@ struct RoomTests {
         store.enterRoom(first.id)
         store.enterRoom(second.id)
 
-        #expect(store.rooms.first { $0.id == first.id }?.membership == .none)
+        // Bare `.none` would compare against Optional.none (nil) — compare
+        // against the explicit enum case.
+        #expect(store.rooms.first { $0.id == first.id }?.membership == Room.Membership.none)
         #expect(store.rooms.first { $0.id == second.id }?.membership == .joined)
         #expect(store.currentRoom?.id == second.id)
     }
@@ -192,7 +194,7 @@ struct RoomTests {
         store.enterRoom(room.id)
         store.leaveRoom(room.id)
 
-        #expect(store.rooms.first { $0.id == room.id }?.membership == .none)
+        #expect(store.rooms.first { $0.id == room.id }?.membership == Room.Membership.none)
         #expect(store.currentRoom == nil)
     }
 
@@ -223,8 +225,11 @@ struct RoomTests {
         let before = store.rooms.filter { $0.membership == .joined }.count
         #expect(store.roomsAttended == before)
 
+        // Entering a room leaves the previously joined one (single joined
+        // room), so the count reflects exactly one currently joined room.
         store.enterRoom(room.id)
-        #expect(store.roomsAttended == before + 1)
+        #expect(store.roomsAttended == 1)
+        #expect(store.currentRoom?.id == room.id)
     }
 }
 

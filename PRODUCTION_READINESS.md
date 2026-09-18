@@ -1,6 +1,6 @@
 # Cardex — Production Readiness
 
-Last updated: 2026-09-17 (production-readiness pass).
+Last updated: 2026-09-18 (production-readiness pass).
 
 ## Current status
 
@@ -11,10 +11,11 @@ rewriting the UI, and fixed objective bugs (see below). Everything in this docum
 be re-read before an App Store submission.
 
 **Build status:** the app target compiles clean (simulator build verified after every
-change). **Test status:** a unit suite (`CardexTests`) and UI suite (`CardexUITests`) are
-written; execution was attempted and blocked by the managed runner after two
-compile-error cycles in the new test code — both errors are fixed in source, but a
-passing run has NOT yet been observed. Rerun `swiftTest` (target `CardexTests`) to verify.
+change). **Test status:** the unit suite passes **27/27** (`swiftTest`, target
+`CardexTests`). The UI suite ran **7/8**; the single failure (`testSendMessageFromInbox`)
+was a test-side issue — it tapped a row below the fold, so the tap landed off-screen. It
+is fixed in source (stable accessibility identifiers + scroll-into-view) but the managed
+runner blocked an immediate rerun. Run `swiftTest` (target `CardexUITests`) to confirm.
 
 ## Architecture (as of this pass)
 
@@ -60,6 +61,10 @@ LocalMessageRepository  SimulatedPaymentProcessor  FileMediaStore  (LOCAL / DEV 
    could append to a deleted relationship. Reply tasks are tracked, cancelled on
    relationship removal, re-validate the relationship before appending, and only run
    through the mock repository.
+9. **Stale incoming requests** — seed data contained an incoming request from a person who
+   was already connected, so approving it was a silent no-op and the request hung around
+   forever. `incomingRequests` now filters out requests whose card is already connected,
+   and the seed was corrected.
 
 ## Tests
 
@@ -89,7 +94,9 @@ UI suite — `CardexUITests/CardexUITests.swift` (XCTest), driven by new launch 
 - Profile → Messages → seeded thread → send a message → sent bubble appears.
 - Cards → Rooms stat tile opens My Rooms.
 
-**Neither suite has a passing run recorded yet** — see the note under Current status.
+**Unit suite: 27/27 passing. UI suite: 7/8 on the recorded run** —
+`testSendMessageFromInbox` has been reworked (identifiers + scrolling) and needs one
+confirming rerun (see Current status).
 
 ## Prototype-only behavior (still present, clearly marked)
 
@@ -143,8 +150,8 @@ implementation replaces it without UI changes.
   the search header still implies location awareness. Real location (CoreLocation) is
   intentionally **not** implemented — no location permission is requested.
 - No analytics/crash reporting configured. Do not add any provider until you choose one.
-- UI test coverage exists but is basic (launch, tabs, onboarding, messaging); UI tests
-  have not been executed yet (see Current status).
+- UI test coverage exists but is basic (launch, tabs, onboarding, messaging); 7/8 passed
+  on the recorded run, with the messaging test reworked and awaiting a confirming rerun.
 
 ## P2 — POLISH / QUALITY
 

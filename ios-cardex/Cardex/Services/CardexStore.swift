@@ -143,11 +143,11 @@ final class CardexStore {
 
         requests = [
             AccessRequest(
-                card: james,
+                card: elena,
                 direction: .incoming,
                 requestedTier: .trusted,
                 createdAt: Date().addingTimeInterval(-5 * 3600),
-                context: "Harbourline Demo Night"
+                context: "Founders Breakfast"
             ),
             AccessRequest(
                 card: priya,
@@ -232,7 +232,12 @@ final class CardexStore {
     var storyRing: [BusinessCard] { liveInRoom.filter(\.hasActiveStories) }
 
     var incomingRequests: [AccessRequest] {
-        requests.filter { $0.direction == .incoming && $0.status == .pending }
+        // Stale requests from people who are already connected must never
+        // surface — approving them would be a no-op.
+        let connectedIDs = Set(connections.map(\.card.id))
+        return requests.filter {
+            $0.direction == .incoming && $0.status == .pending && !connectedIDs.contains($0.card.id)
+        }
     }
 
     var outgoingRequests: [AccessRequest] {
