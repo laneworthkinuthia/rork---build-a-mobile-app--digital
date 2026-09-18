@@ -3,10 +3,12 @@ import SwiftUI
 /// Profile tab: your own card, visibility, access control and settings.
 struct ProfileView: View {
     @Environment(CardexStore.self) private var store
+    @Environment(AuthManager.self) private var auth
     @State private var path: [ProfileRoute] = []
     @State private var isShowingModeSheet = false
     @State private var isShowingExchange = false
     @State private var isFlipped = false
+    @State private var isConfirmingDelete = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -43,6 +45,7 @@ struct ProfileView: View {
 
                         visibilityCard
                         settingsGroup
+                        accountSection
                     }
                     .padding(.bottom, 28)
                 }
@@ -194,6 +197,131 @@ struct ProfileView: View {
         }
         .buttonStyle(.pressable)
         .accessibilityIdentifier(identifier ?? "")
+    }
+
+    /// Beta account controls: identity, blocked people, sign out, delete.
+    @ViewBuilder
+    private var accountSection: some View {
+        if store.mode == .beta {
+            VStack(spacing: 12) {
+                SectionHeader(title: "Account")
+
+                VStack(spacing: 0) {
+                    if let email = store.signedInEmail {
+                        HStack(spacing: 13) {
+                            Image(systemName: "person.crop.circle.fill")
+                                .font(.system(size: 15))
+                                .foregroundStyle(Theme.textSecondary)
+                                .frame(width: 40, height: 40)
+                                .background(Theme.surfaceHigh, in: .rect(cornerRadius: 12))
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Signed in")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundStyle(Theme.textPrimary)
+                                Text(email)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Theme.textSecondary)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+
+                        Divider().overlay(Theme.hairline)
+                    }
+
+                    ForEach(store.blockedUsers) { blocked in
+                        HStack(spacing: 13) {
+                            Image(systemName: "hand.raised.fill")
+                                .font(.system(size: 15))
+                                .foregroundStyle(Theme.warning)
+                                .frame(width: 40, height: 40)
+                                .background(Theme.surfaceHigh, in: .rect(cornerRadius: 12))
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Blocked")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundStyle(Theme.textPrimary)
+                                Text(blocked.name)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Theme.textSecondary)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer(minLength: 0)
+
+                            Button("Unblock") {
+                                store.unblockUser(blocked.id)
+                            }
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.accent)
+                            .buttonStyle(.pressable)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+
+                        Divider().overlay(Theme.hairline)
+                    }
+
+                    accountAction("arrow.right.square", "Sign Out") {
+                        auth.signOut()
+                        store.resetForSignOut()
+                    }
+
+                    Divider().overlay(Theme.hairline)
+
+                    accountAction("trash", "Delete Account", role: .destructive) {
+                        isConfirmingDelete = true
+                    }
+                }
+                .panel()
+            }
+            .confirmationDialog(
+                "Delete your account?",
+                isPresented: $isConfirmingDelete,
+                titleVisibility: .visible,
+            ) {
+                Button("Delete Account", role: .destructive) {
+                    Task {
+                        await store.deleteAccount()
+                        auth.signOut()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This erases your card, connections and messages from Cardex. This cannot be undone.")
+            }
+        }
+    }
+
+    private func accountAction(
+        _ symbol: String,
+        _ title: String,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void,
+    ) -> some View {
+        Button(role: role, action: action) {
+            HStack(spacing: 13) {
+                Image(systemName: symbol)
+                    .font(.system(size: 15))
+                    .foregroundStyle(role == .destructive ? Theme.warning : Theme.textSecondary)
+                    .frame(width: 40, height: 40)
+                    .background(Theme.surfaceHigh, in: .rect(cornerRadius: 12))
+
+                Text(title)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(role == .destructive ? Theme.warning : Theme.textPrimary)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.pressable)
     }
 }
 

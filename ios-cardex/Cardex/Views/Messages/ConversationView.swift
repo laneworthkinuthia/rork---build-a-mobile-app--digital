@@ -47,7 +47,11 @@ struct ConversationView: View {
                 }
             }
         }
-        .onAppear { store.markThreadRead(partnerID) }
+        .onAppear {
+            store.activeThreadPartnerID = partnerID
+            store.markThreadRead(partnerID)
+        }
+        .onDisappear { store.activeThreadPartnerID = nil }
     }
 
     private var threadList: some View {

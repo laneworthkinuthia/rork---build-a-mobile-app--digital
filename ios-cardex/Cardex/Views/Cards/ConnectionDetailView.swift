@@ -14,6 +14,9 @@ struct ConnectionDetailView: View {
     @State private var isShowingAccessSheet = false
     @State private var isShowingStories = false
     @State private var isShowingChat = false
+    @State private var isConfirmingBlock = false
+    @State private var isShowingReport = false
+    @State private var reportReason = ""
 
     private var connection: Connection? {
         store.connections.first { $0.id == connectionID }
@@ -60,6 +63,18 @@ struct ConnectionDetailView: View {
                         } label: {
                             Label("Remove card", systemImage: "trash")
                         }
+                        Divider()
+                        Button(role: .destructive) {
+                            isConfirmingBlock = true
+                        } label: {
+                            Label("Block", systemImage: "hand.raised")
+                        }
+                        Button {
+                            reportReason = ""
+                            isShowingReport = true
+                        } label: {
+                            Label("Report", systemImage: "exclamationmark.bubble")
+                        }
                     } label: {
                         Image(systemName: "ellipsis")
                     }
@@ -88,6 +103,33 @@ struct ConnectionDetailView: View {
             if let card = connection?.card {
                 StoryViewer(cards: [card], startIndex: 0)
             }
+        }
+        .confirmationDialog(
+            "Block \(connection?.card.name ?? "this person")?",
+            isPresented: $isConfirmingBlock,
+            titleVisibility: .visible,
+        ) {
+            Button("Block", role: .destructive) {
+                if let connection {
+                    store.blockUser(connection.card)
+                    dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("They'll be removed from your connections and you won't be able to exchange cards, message each other, or see each other in Cardex.")
+        }
+        .alert("Report \(connection?.card.firstName ?? "this person")?", isPresented: $isShowingReport) {
+            TextField("What happened?", text: $reportReason)
+            Button("Send Report", role: .destructive) {
+                if let connection {
+                    store.reportUser(connection.card, reason: reportReason)
+                }
+                reportReason = ""
+            }
+            Button("Cancel", role: .cancel) { reportReason = "" }
+        } message: {
+            Text("Your report goes to the Cardex team. The person you report won't be told.")
         }
     }
 

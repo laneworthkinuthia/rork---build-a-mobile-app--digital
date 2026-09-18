@@ -5,7 +5,12 @@ struct OnboardingView: View {
     @Environment(CardexStore.self) private var store
 
     @State private var step = 0
-    @State private var draft: BusinessCard = SampleData.makeOwner()
+    // Starts empty; onAppear copies the store's card (seeded locally, blank in
+    // the beta). Real users type their own details — no sample data leaks in.
+    @State private var draft = BusinessCard(
+        name: "", title: "", company: "", industry: "", tagline: "", location: "",
+        photoName: "", palette: .indigo, monogram: "", details: [],
+    )
     @State private var mode: VisibilityMode = .live
     @State private var isShowingPhotoSources = false
 

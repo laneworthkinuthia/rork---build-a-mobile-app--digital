@@ -284,8 +284,11 @@ struct RoomCard: View {
                                 .foregroundStyle(.white)
 
                             HStack(spacing: 10) {
-                                Label(room.distanceLabel, systemImage: "location.fill")
-                                Label("\(room.liveCount) live", systemImage: "person.2.fill")
+                                // Beta rooms carry no fabricated distance.
+                                if room.distanceMiles > 0 {
+                                    Label(room.distanceLabel, systemImage: "location.fill")
+                                }
+                                Label("\(room.liveCount) in room", systemImage: "person.2.fill")
                             }
                             .font(.system(size: 12))
                             .monospacedDigit()

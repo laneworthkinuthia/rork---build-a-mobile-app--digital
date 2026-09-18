@@ -8,6 +8,8 @@ import UIKit
 
 @main
 struct CardexApp: App {
+    @State private var auth = AuthManager()
+
     init() {
         configureAppearance()
     }
@@ -15,6 +17,7 @@ struct CardexApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(auth)
         }
     }
 

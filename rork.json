@@ -1,10 +1,15 @@
 {
+  "$schema": "https://rork.com/schema/rork.json",
   "apps": [
     {
       "name": "Cardex",
       "path": "ios-cardex",
       "framework": "swift"
+    },
+    {
+      "name": "Functions",
+      "path": "functions",
+      "framework": "cloudflare"
     }
-  ],
-  "$schema": "https://rork.com/schema/rork.json"
+  ]
 }

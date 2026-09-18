@@ -10,7 +10,10 @@ struct MessagesInboxView: View {
             CanvasBackground()
 
             ScrollView {
-                LazyVStack(spacing: 10) {
+                // A plain VStack (not lazy): inbox thread counts are small,
+                // and lazy containers are unreliable for accessibility
+                // queries and VoiceOver.
+                VStack(spacing: 10) {
                     if store.conversations.isEmpty {
                         EmptyStateView(
                             symbol: "bubble.left.and.bubble.right",

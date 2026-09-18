@@ -374,3 +374,155 @@ struct SearchTests {
         #expect(!store.searchRooms(query: "zzz-not-a-room").isEmpty == false)
     }
 }
+
+// MARK: - Beta backend integration
+
+@MainActor
+struct BetaIntegrationTests {
+
+    private static let cardJSON = """
+    {
+        "id": "22222222-2222-2222-2222-222222222222",
+        "name": "Ada Lovelace",
+        "title": "Engineer",
+        "company": "Analytical Engines",
+        "industry": "Computing",
+        "tagline": "First programmer",
+        "location": "London",
+        "photoName": "",
+        "palette": "indigo",
+        "monogram": "AL",
+        "details": [
+            {"id": "33333333-3333-3333-3333-333333333333", "kind": "mobile", "value": "+44 20 7946 0000", "tier": "trusted"},
+            {"id": "33333333-3333-3333-3333-333333333334", "kind": "linkedin", "value": "/in/ada", "tier": "public"}
+        ],
+        "credentials": [],
+        "skills": [],
+        "visibility": "live",
+        "stories": []
+    }
+    """
+
+    @Test func transportEncodingInlinesPhotoBlobs() throws {
+        var card = SampleData.makeOwner()
+        let blob = Data("beta-photo-bytes".utf8)
+        card.photoData = blob
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        let data = try TransportCoding.cardData(card, encoder: encoder)
+        let payload = String(decoding: data, as: UTF8.self)
+
+        // Blobs travel as base64 — the literal bytes must not leak raw.
+        #expect(payload.contains(blob.base64EncodedString()), "Transport card must inline the photo bytes")
+        #expect(!payload.contains("beta-photo-bytes"), "Raw bytes must be base64, not literal")
+        #expect(!payload.contains("photoReference"), "Transport card must not reference on-disk files")
+    }
+
+    @Test func emptySnapshotDecodes() throws {
+        let json = """
+        {
+            "me": null,
+            "connections": [],
+            "requests": [],
+            "rooms": [],
+            "messages": [],
+            "posts": [],
+            "discoverable": [],
+            "activity": [],
+            "blocked": [],
+            "readMarkers": {},
+            "serverTime": 1789734856
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let snapshot = try decoder.decode(BackendSnapshot.self, from: Data(json.utf8))
+
+        #expect(snapshot.me == nil)
+        #expect(snapshot.connections.isEmpty)
+        #expect(snapshot.blocked.isEmpty)
+    }
+
+    /// What the server actually sends for a Connected-tier view: the trusted
+    /// mobile detail is stripped server-side before the card leaves the API.
+    private static let connectedCardJSON = """
+    {
+        "id": "22222222-2222-2222-2222-222222222222",
+        "name": "Ada Lovelace",
+        "title": "Engineer",
+        "company": "Analytical Engines",
+        "industry": "Computing",
+        "tagline": "First programmer",
+        "location": "London",
+        "photoName": "",
+        "palette": "indigo",
+        "monogram": "AL",
+        "details": [
+            {"id": "33333333-3333-3333-3333-333333333334", "kind": "linkedin", "value": "/in/ada", "tier": "public"}
+        ],
+        "credentials": [],
+        "skills": [],
+        "visibility": "live",
+        "stories": []
+    }
+    """
+
+    @Test func snapshotDecodesConnectionsAndBlockedUsers() throws {
+        let json = """
+        {
+            "me": \(Self.cardJSON),
+            "connections": [
+                {
+                    "id": "55555555-5555-5555-5555-555555555555",
+                    "card": \(Self.connectedCardJSON),
+                    "metAt": "Cardex exchange",
+                    "metOn": 1789734856,
+                    "origin": "exchange",
+                    "isFavorite": false,
+                    "note": "",
+                    "grantedTier": "connected",
+                    "accessRequestPending": false
+                }
+            ],
+            "requests": [],
+            "rooms": [],
+            "messages": [],
+            "posts": [],
+            "discoverable": [],
+            "activity": [],
+            "blocked": [{"id": "66666666-6666-6666-6666-666666666666", "name": "Spammy Sam"}],
+            "readMarkers": {"22222222-2222-2222-2222-222222222222": 1789734856},
+            "serverTime": 1789734856
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let snapshot = try decoder.decode(BackendSnapshot.self, from: Data(json.utf8))
+
+        #expect(snapshot.connections.count == 1)
+        #expect(snapshot.connections[0].grantedTier == .connected)
+        // Server-side tier enforcement: only the public detail survives.
+        #expect(snapshot.connections[0].card.details.allSatisfy { $0.kind != .mobile })
+        #expect(snapshot.connections[0].visibleDetails.count == 1)
+        #expect(snapshot.blocked[0].name == "Spammy Sam")
+        #expect(snapshot.readMarkers.count == 1)
+    }
+
+    @Test func activityKindMappingDropsUnknowns() throws {
+        struct Fixture: Decodable { let activity: [BackendActivity] }
+        let json = """
+        {"activity": [
+            {"id": "11111111-1111-1111-1111-111111111111", "kind": "exchanged", "detail": "TechWeek Mixer", "date": 1789734856, "card": \(Self.cardJSON)},
+            {"id": "44444444-4444-4444-4444-444444444444", "kind": "mystery-kind", "detail": "ignored", "date": 1789734856, "card": \(Self.cardJSON)}
+        ]}
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let fixture = try decoder.decode(Fixture.self, from: Data(json.utf8))
+
+        #expect(fixture.activity.count == 2)
+        #expect(fixture.activity[0].activityItem?.kind == ActivityItem.Kind.exchanged)
+        #expect(fixture.activity[1].activityItem == nil, "Unknown activity kinds are dropped")
+    }
+}

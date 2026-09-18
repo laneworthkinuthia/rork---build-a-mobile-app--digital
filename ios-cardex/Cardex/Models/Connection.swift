@@ -115,6 +115,8 @@ nonisolated struct ActivityItem: Identifiable, Hashable {
         case joinedRoom
         case ticketPurchased
         case eventCreated
+        case cardCreated
+        case roomJoined
     }
 
     let id: UUID
@@ -140,6 +142,8 @@ nonisolated struct ActivityItem: Identifiable, Hashable {
         case .joinedRoom: "\(card.name) joined your room"
         case .ticketPurchased: "Ticket purchased for \(detail)"
         case .eventCreated: "You created \(detail)"
+        case .cardCreated: "You created your card"
+        case .roomJoined: "You joined \(detail)"
         }
     }
 
@@ -152,6 +156,8 @@ nonisolated struct ActivityItem: Identifiable, Hashable {
         case .joinedRoom: "door.left.hand.open"
         case .ticketPurchased: "ticket.fill"
         case .eventCreated: "plus.rectangle.on.folder.fill"
+        case .cardCreated: "checkmark.seal.fill"
+        case .roomJoined: "door.left.hand.open"
         }
     }
 }

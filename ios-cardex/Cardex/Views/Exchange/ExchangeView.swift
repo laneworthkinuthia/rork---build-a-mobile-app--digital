@@ -11,6 +11,9 @@ struct ExchangeView: View {
     @State private var sweep = false
     @State private var matchedCard: BusinessCard?
     @State private var exchangedCard: BusinessCard?
+    // Beta scan flow: real camera → server preview → confirm.
+    @State private var confirmingPreview: ExchangePreview?
+    @State private var isExchanging = false
 
     private enum Mode: String, CaseIterable, Identifiable {
         case share, scan
@@ -143,14 +146,124 @@ struct ExchangeView: View {
                     .fill(Theme.accent)
                     .frame(width: 7, height: 7)
                     .opacity(sweep ? 1 : 0.3)
-                Text("Searching nearby...")
+                Text(store.mode == .beta ? "Show this code to them" : "Searching nearby...")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.textSecondary)
             }
         }
     }
 
+    @ViewBuilder
     private var scanContent: some View {
+        if store.mode == .beta {
+            betaScanContent
+        } else {
+            prototypeScanContent
+        }
+    }
+
+    /// Real exchange: the camera reads their code, the backend previews their
+    /// public card, and confirming creates the connection for both accounts.
+    private var betaScanContent: some View {
+        VStack(spacing: 20) {
+            VStack(spacing: 4) {
+                Text("Point at their code")
+                    .font(.system(size: 26, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text(confirmingPreview == nil ? "Their card appears when the scan lands" : "Confirm to exchange cards")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 26)
+                    .strokeBorder(Theme.accent.opacity(0.55), style: StrokeStyle(lineWidth: 2, dash: [50, 18]))
+                    .frame(width: 264, height: 264)
+
+                if let preview = confirmingPreview {
+                    exchangeConfirmation(preview)
+                } else {
+                    QRScannerView { code in handleScanned(code) }
+                        .frame(width: 248, height: 248)
+                        .clipShape(.rect(cornerRadius: 20))
+                }
+            }
+
+            if isExchanging {
+                ProgressView("Exchanging…")
+                    .tint(Theme.accent)
+            }
+        }
+    }
+
+    private func exchangeConfirmation(_ preview: ExchangePreview) -> some View {
+        VStack(spacing: 10) {
+            Avatar(card: preview.card, size: 62)
+            Text(preview.card.name)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+            Text("\(preview.card.title), \(preview.card.company)")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+
+            HStack(spacing: 10) {
+                Button {
+                    confirmingPreview = nil
+                } label: {
+                    SecondaryButtonLabel(title: "Cancel")
+                }
+                .buttonStyle(.pressable)
+                .frame(width: 96)
+
+                Button {
+                    confirmExchange(preview)
+                } label: {
+                    PrimaryButtonLabel(title: "Exchange")
+                }
+                .buttonStyle(.pressable)
+                .frame(width: 122)
+            }
+            .padding(.top, 4)
+        }
+        .padding(14)
+    }
+
+    private func handleScanned(_ code: String) {
+        guard confirmingPreview == nil, !isExchanging else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        Task {
+            do {
+                confirmingPreview = try await store.exchangePreview(for: code)
+            } catch {
+                store.betaError = (error as? LocalizedError)?.errorDescription
+                    ?? "That code didn't work. Try again."
+            }
+        }
+    }
+
+    private func confirmExchange(_ preview: ExchangePreview) {
+        guard !isExchanging else { return }
+        isExchanging = true
+        let place = store.currentRoom?.name ?? "Cardex exchange"
+        Task {
+            defer { isExchanging = false }
+            do {
+                try await store.confirmExchange(code: "cardex://card/\(preview.userUUID)", place: place)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                confirmingPreview = nil
+                exchangedCard = preview.card
+            } catch {
+                store.betaError = (error as? LocalizedError)?.errorDescription
+                    ?? "The exchange failed. Try again."
+            }
+        }
+    }
+
+    /// Development-only strip so previews and UI tests have someone to
+    /// "exchange" with locally. Never shown in the beta.
+    private var prototypeScanContent: some View {
         VStack(spacing: 20) {
             VStack(spacing: 4) {
                 Text("Point at their code")

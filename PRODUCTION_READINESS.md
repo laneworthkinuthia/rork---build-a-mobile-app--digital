@@ -1,21 +1,49 @@
 # Cardex — Production Readiness
 
-Last updated: 2026-09-18 (production-readiness pass).
+Last updated: 2026-09-18 (closed-beta milestone).
 
 ## Current status
 
-**Cardex is NOT production ready.** It is a polished, fully client-side prototype. There is
-no backend, no authentication, no real messaging, no real payments, and no analytics. The
-work in this pass established the architecture so those services can be added without
-rewriting the UI, and fixed objective bugs (see below). Everything in this document should
-be re-read before an App Store submission.
+**Cardex is a CLOSED BETA, not production ready.** The sections below that describe a
+fully client-side prototype predate the beta milestone and are kept for history.
 
-**Build status:** the app target compiles clean (simulator build verified after every
-change). **Test status:** the unit suite passes **27/27** (`swiftTest`, target
-`CardexTests`). The UI suite ran **7/8**; the single failure (`testSendMessageFromInbox`)
-was a test-side issue — it tapped a row below the fold, so the tap landed off-screen. It
-is fixed in source (stable accessibility identifiers + scroll-into-view) but the managed
-runner blocked an immediate rerun. Run `swiftTest` (target `CardexUITests`) to confirm.
+**Closed-beta milestone (2026-09-18):**
+
+- **Real backend.** Cloudflare Worker + single `CardexHub` Durable Object (`functions/`)
+  owns all beta state in SQLite: users/cards, connections, access requests, messages,
+  read markers, rooms + membership + door queues + tickets, posts, applause, blocks,
+  reports, activity, analytics. Deployed at `https://build-a-mobile-app-digital-
+business-card-backend.rork.app` (codeId 4099e095, curl-verified: `/ping` 200,
+  unauthenticated `/state` 401). WebSocket push + 30 s polling fallback.
+- **Real authentication.** Rork Auth (Apple/Google) via `ASWebAuthenticationSession`;
+  tokens in Keychain, silent refresh, callback scheme `rork-p8bgff7cw7kasw6687yah`
+  registered in `ios-cardex/Info.plist`. Identity is stamped by the platform
+  (`X-Rork-User-Id`) — the backend never trusts client identity claims.
+- **Server-side enforcement.** Card contact details are filtered by granted tier on the
+  server before they leave the API; duplicate/stale requests, self-grants, blocked-pair
+  interactions, and multi-room joins are rejected server-side.
+- **Real exchange.** QR payload `cardex://card/<server uuid>`; the scanner runs real
+  AVFoundation; the backend previews the public card, then creates the connection for
+  both accounts and pushes live updates.
+- **Real messaging.** Optimistic send + server echo, unread via server read markers,
+  no canned replies in beta (simulated replies exist only in local dev mode).
+- **Real rooms.** Server-seeded "Cardex Beta Lobby" plus user-hosted events; membership,
+  door approvals, broadcast flags and ticket records are shared data. No fabricated
+  distances or attendee counts (distance hidden when 0).
+- **Safety & account.** Block (with full teardown both sides), report, remove connection,
+  sign out, delete account — all server-backed.
+- **Analytics.** Minimal event rows in the backend (account/card/exchange/connection/
+  room/message/app-open); no third-party provider, no PII.
+- **Test status:** unit suite **31/31 passing** (27 prior + 4 new beta tests). UI suite
+  **7/8** — `testSendMessageFromInbox` fails on a likely LazyVStack accessibility quirk;
+  the fix (plain `VStack` inbox + name-based fallback matching) is in source but the
+  runner blocked the verifying rerun — run `swiftTest` (target `CardexUITests`) to confirm.
+- **Simulated payment kept, clearly marked:** ticket purchase runs the dev-only
+  `SimulatedPaymentProcessor` (charges nothing) and records the ticket server-side.
+
+**Local mode** (`UITEST_LOCAL` launch arg) preserves the original offline prototype —
+seeds, simulated replies, local persistence — for unit tests, previews and UI tests.
+The beta mode never loads sample data.
 
 ## Architecture (as of this pass)
 

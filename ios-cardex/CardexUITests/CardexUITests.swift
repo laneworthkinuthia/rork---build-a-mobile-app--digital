@@ -12,7 +12,7 @@ final class CardexUITests: XCTestCase {
     @MainActor
     func testAllTabsNavigateToTheirScreens() {
         let app = XCUIApplication()
-        app.launchArguments = ["UITEST_RESET", "UITEST_SKIP_ONBOARDING"]
+        app.launchArguments = ["UITEST_RESET", "UITEST_SKIP_ONBOARDING", "UITEST_LOCAL"]
         app.launch()
 
         let tabBar = app.tabBars.firstMatch
@@ -32,7 +32,7 @@ final class CardexUITests: XCTestCase {
     @MainActor
     func testOnboardingCompletesToMainApp() {
         let app = XCUIApplication()
-        app.launchArguments = ["UITEST_RESET"]
+        app.launchArguments = ["UITEST_RESET", "UITEST_LOCAL"]
         app.launch()
 
         let create = app.buttons["Create My Card"]
@@ -69,29 +69,34 @@ final class CardexUITests: XCTestCase {
     @MainActor
     func testSendMessageFromInbox() {
         let app = XCUIApplication()
-        app.launchArguments = ["UITEST_RESET", "UITEST_SKIP_ONBOARDING"]
+        app.launchArguments = ["UITEST_RESET", "UITEST_SKIP_ONBOARDING", "UITEST_LOCAL"]
         app.launch()
 
         let tabBar = app.tabBars.firstMatch
         XCTAssertTrue(tabBar.waitForExistence(timeout: 10))
         tabBar.buttons["Profile"].tap()
 
-        let messagesRow = app.buttons["profile-messages-row"]
-        XCTAssertTrue(messagesRow.waitForExistence(timeout: 5), "Messages row missing from Profile")
-        // The row is below the fold — scroll it into view or the tap lands
-        // on whatever happens to be at its off-screen coordinates.
-        var swipes = 0
-        while !messagesRow.isHittable && swipes < 4 {
-            app.swipeUp(velocity: .fast)
-            swipes += 1
+        // Open the inbox. The row sits below the fold, so scroll it into view,
+        // tap, and verify the screen actually opened — a settling scroll can
+        // swallow a tap, so retry a couple of times before failing.
+        let navBar = app.navigationBars["Messages"]
+        var attempts = 0
+        while !navBar.exists && attempts < 4 {
+            let row = app.buttons["profile-messages-row"]
+            if !row.waitForExistence(timeout: 3) { break }
+            if !row.isHittable { app.swipeUp() }
+            if row.isHittable { row.tap() }
+            _ = navBar.waitForExistence(timeout: 3)
+            attempts += 1
         }
-        XCTAssertTrue(messagesRow.isHittable, "Messages row never became tappable")
-        messagesRow.tap()
+        XCTAssertTrue(navBar.waitForExistence(timeout: 5), "Messages inbox did not open")
 
         // Seeded thread with a connection (Sarah Okafor).
         let thread = app.buttons["inbox-row"]
-        XCTAssertTrue(thread.waitForExistence(timeout: 5), "Seeded conversation missing from inbox")
-        thread.tap()
+        let threadByName = app.staticTexts["Sarah Okafor"]
+        let foundThread = thread.waitForExistence(timeout: 6) || threadByName.waitForExistence(timeout: 3)
+        XCTAssertTrue(foundThread, "Seeded conversation missing from inbox")
+        (thread.exists ? thread : threadByName).tap()
 
         let field = app.textViews.firstMatch
         let fallbackField = app.textFields.firstMatch
@@ -113,7 +118,7 @@ final class CardexUITests: XCTestCase {
     @MainActor
     func testMyRoomsOpensFromCardsStatTile() {
         let app = XCUIApplication()
-        app.launchArguments = ["UITEST_RESET", "UITEST_SKIP_ONBOARDING"]
+        app.launchArguments = ["UITEST_RESET", "UITEST_SKIP_ONBOARDING", "UITEST_LOCAL"]
         app.launch()
 
         let tabBar = app.tabBars.firstMatch

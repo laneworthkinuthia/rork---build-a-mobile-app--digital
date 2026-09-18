@@ -160,8 +160,14 @@ nonisolated struct StoryUpdate: Identifiable, Hashable, Codable {
         try container.encode(imageName, forKey: .imageName)
         try container.encode(caption, forKey: .caption)
         try container.encode(postedAt, forKey: .postedAt)
-        if let imageData, let reference = Self.mediaStore.store(imageData, forKey: "story-\(id.uuidString)") {
-            try container.encode(reference, forKey: .imageReference)
+        if let imageData {
+            if let reference = Self.mediaStore.store(imageData, forKey: "story-\(id.uuidString)") {
+                try container.encode(reference, forKey: .imageReference)
+            } else {
+                // Store-less transport (backend sync): inline the bytes so
+                // other devices receive the image.
+                try container.encode(imageData, forKey: .imageData)
+            }
         }
     }
 
@@ -287,8 +293,14 @@ nonisolated struct BusinessCard: Identifiable, Hashable, Codable {
         try container.encode(skills, forKey: .skills)
         try container.encode(visibility, forKey: .visibility)
         try container.encode(stories, forKey: .stories)
-        if let photoData, let reference = Self.mediaStore.store(photoData, forKey: "card-\(id.uuidString)-photo") {
-            try container.encode(reference, forKey: .photoReference)
+        if let photoData {
+            if let reference = Self.mediaStore.store(photoData, forKey: "card-\(id.uuidString)-photo") {
+                try container.encode(reference, forKey: .photoReference)
+            } else {
+                // Store-less transport (backend sync): inline the bytes so
+                // other devices receive the photo.
+                try container.encode(photoData, forKey: .photoData)
+            }
         }
     }
 

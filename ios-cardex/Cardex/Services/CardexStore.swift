@@ -31,7 +31,7 @@ final class CardexStore {
     private(set) var activity: [ActivityItem]
     /// Message storage lives behind a repository so a backend can replace the
     /// local development implementation without UI changes.
-    let messageRepository: any MessageRepository
+    private(set) var messageRepository: any MessageRepository
     /// Payment processing. Only the simulated processor exists today — it is
     /// NOT a real payment provider (see PRODUCTION_READINESS.md).
     let paymentProcessor: any PaymentProcessing
@@ -45,6 +45,43 @@ final class CardexStore {
     private(set) var pendingConnectionIDs: Set<UUID> = []
     /// Rooms the user is attending remotely rather than in person.
     private(set) var remoteRoomIDs: Set<UUID> = []
+
+    // MARK: Beta sync state
+
+    /// `.local` keeps the original offline prototype behaviour (sample seeds,
+    /// simulated replies) for unit tests, previews and UI tests. `.beta` is
+    /// backed by the CardexHub backend: real accounts, real exchange, real
+    /// messaging, real rooms — the server is authoritative.
+    enum SyncMode {
+        case local
+        case beta
+    }
+
+    /// Connection lifecycle against the backend.
+    enum SyncPhase: Equatable {
+        case idle
+        case connecting
+        case ready
+        /// The last sync failed; cached data stays visible.
+        case offline(String)
+    }
+
+    let mode: SyncMode
+    private(set) var syncPhase: SyncPhase = .idle
+    /// One-shot error surface for failed mutations, shown as an alert.
+    var betaError: String?
+    private(set) var blockedIDs: Set<UUID> = []
+    private(set) var blockedUsers: [BlockedUser] = []
+    /// Set while a conversation screen is open so its messages don't banner.
+    var activeThreadPartnerID: UUID?
+    private(set) var signedInEmail: String?
+    private(set) var currentUserID: String?
+
+    private weak var auth: AuthManager?
+    private var realtime: RealtimeClient?
+    private var pollTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+    private var hasTrackedAppOpen = false
 
     var rolodexSort: RolodexSort = .recent
     var hasCompletedOnboarding: Bool
@@ -61,9 +98,11 @@ final class CardexStore {
     init(
         defaults: UserDefaults = .standard,
         messageRepository: (any MessageRepository)? = nil,
-        paymentProcessor: (any PaymentProcessing)? = nil
+        paymentProcessor: (any PaymentProcessing)? = nil,
+        mode: SyncMode = .local
     ) {
         self.defaults = defaults
+        self.mode = mode
 
         // UI-test hooks: start from a clean slate, optionally skipping onboarding.
         let arguments = ProcessInfo.processInfo.arguments
@@ -72,8 +111,12 @@ final class CardexStore {
         }
 
         let loadedOwner: BusinessCard
-        if let data = defaults.data(forKey: ownerKey),
-           let stored = try? JSONDecoder().decode(BusinessCard.self, from: data) {
+        if mode == .beta {
+            // Real users start from an empty card; the server snapshot or
+            // onboarding fills it in. Sample data never leaks into the beta.
+            loadedOwner = Self.placeholderCard()
+        } else if let data = defaults.data(forKey: ownerKey),
+                  let stored = try? JSONDecoder().decode(BusinessCard.self, from: data) {
             loadedOwner = stored
         } else {
             loadedOwner = SampleData.makeOwner()
@@ -90,8 +133,20 @@ final class CardexStore {
             readMarkers = stored
         }
 
-        self.messageRepository = messageRepository ?? LocalMessageRepository(ownerID: loadedOwner.id)
+        self.messageRepository = messageRepository
+            ?? (mode == .beta ? InMemoryMessageRepository() : LocalMessageRepository(ownerID: loadedOwner.id))
         self.paymentProcessor = paymentProcessor ?? SimulatedPaymentProcessor()
+
+        guard mode == .local else {
+            // The beta starts empty; GET /state fills everything in.
+            connections = []
+            rooms = []
+            requests = []
+            posts = []
+            activity = []
+            discoverable = []
+            return
+        }
 
         let contacts = SampleData.makeContacts()
 
@@ -214,6 +269,278 @@ final class CardexStore {
         )
     }
 
+    // MARK: - Beta sync machinery
+
+    private static func placeholderCard() -> BusinessCard {
+        BusinessCard(
+            name: "", title: "", company: "", industry: "", tagline: "", location: "",
+            photoName: "", palette: .indigo, monogram: "", details: []
+        )
+    }
+
+    func attach(auth: AuthManager) {
+        self.auth = auth
+    }
+
+    /// Signs the beta user in: pulls the server snapshot, starts realtime.
+    func connect(user: AuthManager.User) async {
+        guard mode == .beta else { return }
+        currentUserID = user.id
+        signedInEmail = user.email
+        syncPhase = .connecting
+        do {
+            let snapshot = try await fetchSnapshot(opened: !hasTrackedAppOpen)
+            hasTrackedAppOpen = true
+            apply(snapshot)
+            if snapshot.me != nil { hasCompletedOnboarding = true }
+            syncPhase = .ready
+            await startRealtime()
+            NotificationService.shared.requestAuthorization()
+        } catch {
+            syncPhase = .offline(userMessage(for: error))
+        }
+    }
+
+    private func fetchSnapshot(opened: Bool) async throws -> BackendSnapshot {
+        guard let auth else {
+            throw BackendError(kind: .unauthenticated, userMessage: "Please sign in again.")
+        }
+        let token = try await auth.ensureFreshToken()
+        return try await BackendClient.shared.snapshot(token: token, opened: opened)
+    }
+
+    private func requireToken() async throws -> String {
+        guard let auth else {
+            throw BackendError(kind: .unauthenticated, userMessage: "Please sign in again.")
+        }
+        return try await auth.ensureFreshToken()
+    }
+
+    private func apply(_ snapshot: BackendSnapshot) {
+        if let me = snapshot.me { owner = me }
+        connections = snapshot.connections
+        requests = snapshot.requests
+        rooms = snapshot.rooms
+        discoverable = snapshot.discoverable
+        posts = snapshot.posts
+        activity = snapshot.activity.compactMap(\.activityItem)
+        blockedIDs = Set(snapshot.blocked.map(\.id))
+        blockedUsers = snapshot.blocked
+        readMarkers = Dictionary(
+            uniqueKeysWithValues: snapshot.readMarkers.compactMap { key, value in
+                UUID(uuidString: key).map { ($0, Date(timeIntervalSince1970: value)) }
+            },
+        )
+        if let repository = messageRepository as? InMemoryMessageRepository {
+            repository.replace(snapshot.messages)
+        }
+    }
+
+    /// Pulls a fresh snapshot. Safe to call repeatedly (polling, foregrounding).
+    func refresh() async {
+        guard mode == .beta else { return }
+        do {
+            let snapshot = try await fetchSnapshot(opened: false)
+            apply(snapshot)
+            if syncPhase != .ready { syncPhase = .ready }
+        } catch {
+            switch syncPhase {
+            case .ready, .connecting:
+                syncPhase = .offline(userMessage(for: error))
+            case .offline, .idle:
+                break
+            }
+        }
+    }
+
+    private func startRealtime() async {
+        guard let token = try? await requireToken() else { return }
+        let client = RealtimeClient()
+        client.onEvent = { [weak self] event in self?.handleRealtime(event) }
+        realtime?.disconnect()
+        realtime = client
+        client.connect(token: token)
+
+        // Polling fallback — reliability never depends on the socket.
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard let self, !Task.isCancelled else { return }
+                await self.refresh()
+            }
+        }
+    }
+
+    private func handleRealtime(_ event: RealtimeEvent) {
+        switch event {
+        case .messageNew(let message):
+            if let repository = messageRepository as? InMemoryMessageRepository {
+                repository.append(message)
+            }
+            if message.senderID != owner.id,
+               message.senderID != activeThreadPartnerID,
+               let sender = card(withID: message.senderID) {
+                NotificationService.shared.notifyNewMessage(from: sender.name, text: message.text)
+            }
+        case .needsRefresh:
+            scheduleRefresh()
+        }
+    }
+
+    private func scheduleRefresh() {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let self, !Task.isCancelled else { return }
+            await self.refresh()
+        }
+    }
+
+    /// Runs a backend mutation in the background, then re-syncs. Failures
+    /// surface through `betaError` — nothing silently pretends to succeed.
+    private func runMutation(_ operation: @escaping (BackendClient, String) async throws -> Void) {
+        guard mode == .beta else { return }
+        Task { [weak self] in
+            guard let self, let auth = self.auth else { return }
+            do {
+                let token = try await auth.ensureFreshToken()
+                try await operation(BackendClient.shared, token)
+                await self.refresh()
+            } catch {
+                self.betaError = self.userMessage(for: error)
+            }
+        }
+    }
+
+    private func userMessage(for error: Error) -> String {
+        (error as? BackendError)?.userMessage
+            ?? (error as? LocalizedError)?.errorDescription
+            ?? "Something went wrong. Please try again."
+    }
+
+    // MARK: Beta flows (called from views)
+
+    /// Preview of the person behind a scanned QR code, before confirming.
+    func exchangePreview(for code: String) async throws -> ExchangePreview {
+        let token = try await requireToken()
+        let preview = try await BackendClient.shared.exchangePreview(code: code, token: token)
+        try? await BackendClient.shared.track("exchange_scanned", token: token)
+        return preview
+    }
+
+    /// Confirms the exchange; the server creates the connection for both sides.
+    func confirmExchange(code: String, place: String) async throws {
+        let token = try await requireToken()
+        try await BackendClient.shared.exchange(code: code, place: place, token: token)
+        await refresh()
+    }
+
+    /// Publishes the owner's card to the backend (transport encoding inlines
+    /// photo blobs so other devices receive them).
+    private func publishOwnerCard() {
+        guard mode == .beta else { return }
+        let card = owner
+        runMutation { client, token in
+            try await client.saveCard(card, token: token)
+        }
+    }
+
+    private func sendAccessRequest(to card: BusinessCard, tier: AccessTier) {
+        guard mode == .beta else { return }
+        let context = currentRoom?.name ?? "Cardex"
+        runMutation { client, token in
+            try await client.sendAccessRequest(
+                to: card.id.uuidString,
+                tier: tier,
+                context: context,
+                token: token,
+            )
+        }
+    }
+
+    private func syncRoomJoin(_ roomID: UUID, remotely: Bool) {
+        runMutation { client, token in
+            try await client.joinRoom(id: roomID.uuidString, remote: remotely, token: token)
+        }
+    }
+
+    /// Wipes all local state on sign-out.
+    func resetForSignOut() {
+        realtime?.disconnect()
+        realtime = nil
+        pollTask?.cancel()
+        refreshTask?.cancel()
+        pollTask = nil
+        refreshTask = nil
+        currentUserID = nil
+        signedInEmail = nil
+        syncPhase = .idle
+        betaError = nil
+        activeThreadPartnerID = nil
+        hasTrackedAppOpen = false
+        defaults.removePersistentDomain(forName: Bundle.main.bundleIdentifier ?? "Cardex")
+        if mode == .beta {
+            owner = Self.placeholderCard()
+            connections = []
+            rooms = []
+            requests = []
+            posts = []
+            activity = []
+            discoverable = []
+            blockedIDs = []
+            blockedUsers = []
+            readMarkers = [:]
+            pendingConnectionIDs = []
+            remoteRoomIDs = []
+            hasCompletedOnboarding = false
+            if let repository = messageRepository as? InMemoryMessageRepository {
+                repository.replace([])
+            }
+        } else {
+            hasCompletedOnboarding = defaults.bool(forKey: onboardingKey)
+        }
+    }
+
+    // MARK: Safety & account
+
+    /// Blocks someone: tears the relationship down on both sides and stops all
+    /// future interaction through normal Cardex flows.
+    func blockUser(_ card: BusinessCard) {
+        teardownRelationship(with: card.id)
+        blockedIDs.insert(card.id)
+        runMutation { client, token in
+            try await client.block(user: card.id.uuidString, token: token)
+        }
+    }
+
+    func unblockUser(_ id: UUID) {
+        blockedIDs.remove(id)
+        blockedUsers.removeAll { $0.id == id }
+        runMutation { client, token in
+            try await client.unblock(user: id.uuidString, token: token)
+        }
+    }
+
+    func reportUser(_ card: BusinessCard, reason: String) {
+        runMutation { client, token in
+            try await client.report(user: card.id.uuidString, reason: reason, token: token)
+        }
+    }
+
+    /// Deletes the account: the server erases every record, then local state.
+    func deleteAccount() async {
+        guard mode == .beta, let auth else { return }
+        do {
+            let token = try await auth.ensureFreshToken()
+            try await BackendClient.shared.deleteAccount(token: token)
+        } catch {
+            betaError = userMessage(for: error)
+            return
+        }
+        resetForSignOut()
+    }
+
     // MARK: - Derived state
 
     var visibility: VisibilityMode { owner.visibility }
@@ -225,7 +552,8 @@ final class CardexStore {
         guard let room = currentRoom, visibility != .dark else { return [] }
         let pool = discoverable + connections.map(\.card)
         return room.attendeeIDs.compactMap { id in
-            pool.first { $0.id == id && $0.visibility.isDiscoverable }
+            guard !blockedIDs.contains(id) else { return nil }
+            return pool.first { $0.id == id && $0.visibility.isDiscoverable }
         }
     }
 
@@ -290,7 +618,8 @@ final class CardexStore {
         guard !trimmed.isEmpty else { return [] }
         let pool = discoverable + connections.map(\.card)
         return pool.filter { card in
-            [card.name, card.title, card.company, card.industry, card.location, card.skills.joined(separator: " ")]
+            guard !blockedIDs.contains(card.id) else { return false }
+            return [card.name, card.title, card.company, card.industry, card.location, card.skills.joined(separator: " ")]
                 .contains { $0.localizedStandardContains(trimmed) }
         }
     }
@@ -354,17 +683,25 @@ final class CardexStore {
     func setVisibility(_ mode: VisibilityMode) {
         owner.visibility = mode
         persistOwner()
+        publishOwnerCard()
     }
 
     func updateOwner(_ transform: (inout BusinessCard) -> Void) {
         transform(&owner)
         persistOwner()
+        publishOwnerCard()
     }
 
     func completeOnboarding() {
         hasCompletedOnboarding = true
         defaults.set(true, forKey: onboardingKey)
         persistOwner()
+        guard mode == .beta else { return }
+        let card = owner
+        runMutation { client, token in
+            try await client.saveCard(card, token: token)
+            try await client.track("onboarding_finished", token: token)
+        }
     }
 
     func resetOnboarding() {
@@ -387,26 +724,61 @@ final class CardexStore {
     func removeConnection(_ connectionID: UUID) {
         guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
         let card = connections[index].card
-        connections.remove(at: index)
+        teardownRelationship(with: card.id)
         if !discoverable.contains(where: { $0.id == card.id }) {
             discoverable.append(card)
         }
-
-        // Relationship cleanup — nothing about this person may linger.
-        pendingConnectionIDs.remove(card.id)
-        readMarkers[card.id] = nil
-        persistReadMarkers()
-        replyTasks[card.id]?.cancel()
-        replyTasks[card.id] = nil
-        requests.removeAll { $0.card.id == card.id }
-        messageRepository.removeMessages(with: card.id)
+        guard mode == .beta else { return }
+        runMutation { client, token in
+            try await client.removeConnection(partner: card.id.uuidString, token: token)
+        }
     }
 
-    /// Sends an in-app message to a connection. In the development build a
-    /// simulated reply follows; a real backend would deliver incoming messages.
+    /// Local half of relationship teardown — the server mirrors it.
+    private func teardownRelationship(with cardID: UUID) {
+        if let index = connections.firstIndex(where: { $0.card.id == cardID }) {
+            connections.remove(at: index)
+        }
+        pendingConnectionIDs.remove(cardID)
+        readMarkers[cardID] = nil
+        persistReadMarkers()
+        replyTasks[cardID]?.cancel()
+        replyTasks[cardID] = nil
+        requests.removeAll { $0.card.id == cardID }
+        messageRepository.removeMessages(with: cardID)
+    }
+
+    /// Sends a message. In the beta it lands on the backend and is pushed to
+    /// the other user's devices; in the development build a simulated reply
+    /// follows through the local mock repository.
     func sendMessage(_ text: String, to cardID: UUID) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, connection(for: cardID) != nil else { return }
+
+        if mode == .beta {
+            // Optimistic bubble; removed again if the backend rejects it.
+            let message = Message(senderID: owner.id, recipientID: cardID, text: trimmed)
+            if let repository = messageRepository as? InMemoryMessageRepository {
+                repository.append(message)
+            }
+            Task { [weak self] in
+                guard let self, let auth = self.auth else { return }
+                do {
+                    let token = try await auth.ensureFreshToken()
+                    _ = try await BackendClient.shared.sendMessage(
+                        to: cardID.uuidString, text: trimmed, token: token,
+                    )
+                    // The server echo (same id) arrives via WebSocket dedupe.
+                } catch {
+                    if let repository = self.messageRepository as? InMemoryMessageRepository {
+                        repository.remove(id: message.id)
+                    }
+                    self.betaError = self.userMessage(for: error)
+                }
+            }
+            return
+        }
+
         messageRepository.add(Message(senderID: owner.id, recipientID: cardID, text: trimmed))
         scheduleSimulatedReply(from: cardID)
     }
@@ -415,6 +787,10 @@ final class CardexStore {
     func markThreadRead(_ cardID: UUID) {
         readMarkers[cardID] = Date()
         persistReadMarkers()
+        guard mode == .beta else { return }
+        runMutation { client, token in
+            try await client.markRead(partner: cardID.uuidString, token: token)
+        }
     }
 
     /// Development simulation only: schedules one canned reply through the
@@ -446,6 +822,7 @@ final class CardexStore {
     func requestConnection(with card: BusinessCard) {
         guard !isConnected(card), !isPending(card) else { return }
         pendingConnectionIDs.insert(card.id)
+        sendAccessRequest(to: card, tier: .connected)
     }
 
     /// Completes an exchange — the card lands in the rolodex immediately.
@@ -503,6 +880,18 @@ final class CardexStore {
     /// they know who is asking — they then grant or deny access within the
     /// limits of their own privacy settings.
     func requestCardAccess(to card: BusinessCard, tier: AccessTier = .connected) {
+        if mode == .beta {
+            // Real shared request — duplicate and stale requests are rejected
+            // by the server, and the optimistic pending marker clears on sync.
+            let hasPending = requests.contains {
+                $0.card.id == card.id && $0.direction == .outgoing && $0.status == .pending
+            }
+            guard !hasPending, !isConnected(card), !isPending(card) else { return }
+            pendingConnectionIDs.insert(card.id)
+            sendAccessRequest(to: card, tier: tier)
+            return
+        }
+
         let hasPending = requests.contains {
             $0.card.id == card.id && $0.direction == .outgoing && $0.status == .pending
         }
@@ -540,6 +929,23 @@ final class CardexStore {
 
     func resolveRequest(_ requestID: UUID, approve: Bool, tier: AccessTier? = nil) {
         guard let index = requests.firstIndex(where: { $0.id == requestID }) else { return }
+
+        if mode == .beta {
+            // Only the recipient can resolve an incoming request; outgoing
+            // requests are resolved by the other person and arrive via sync.
+            guard requests[index].direction == .incoming else { return }
+            requests[index].status = approve ? .approved : .declined
+            runMutation { client, token in
+                try await client.resolveRequest(
+                    id: requestID.uuidString,
+                    approve: approve,
+                    tier: tier,
+                    token: token,
+                )
+            }
+            return
+        }
+
         requests[index].status = approve ? .approved : .declined
         if let tier { requests[index].requestedTier = tier }
 
@@ -577,12 +983,45 @@ final class CardexStore {
     /// backend must enforce this authoritatively).
     func grantTier(_ tier: AccessTier, to connectionID: UUID) {
         guard let index = connections.firstIndex(where: { $0.id == connectionID }) else { return }
+
+        if mode == .beta {
+            // My grant: raises what the other person can see of my card,
+            // clamped server-side to my visibility ceiling.
+            let partner = connections[index].card.id
+            runMutation { client, token in
+                try await client.grantTier(partner: partner.uuidString, tier: tier, token: token)
+            }
+            return
+        }
+
         connections[index].grantedTier = tier.clamped(by: connections[index].card.visibility.maxShareableTier)
         connections[index].accessRequestPending = false
     }
 
     func enterRoom(_ roomID: UUID, remotely: Bool = false) {
         guard let index = rooms.firstIndex(where: { $0.id == roomID }) else { return }
+
+        if mode == .beta {
+            // Optimistic membership; the server enforces the single joined
+            // room and the refresh reconciles.
+            switch rooms[index].access {
+            case .openDoor:
+                joinRoom(at: index, remotely: remotely)
+                syncRoomJoin(roomID, remotely: remotely)
+            case .request:
+                if remotely {
+                    joinRoom(at: index, remotely: true)
+                    syncRoomJoin(roomID, remotely: true)
+                } else {
+                    rooms[index].membership = .pending
+                    syncRoomJoin(roomID, remotely: false)
+                }
+            case .ticketed:
+                break
+            }
+            return
+        }
+
         switch rooms[index].access {
         case .openDoor:
             joinRoom(at: index, remotely: remotely)
@@ -620,6 +1059,13 @@ final class CardexStore {
             ActivityItem(card: owner, kind: .ticketPurchased, detail: name, date: Date()),
             at: 0
         )
+        if mode == .beta {
+            // BETA: the simulated processor above charges nothing; the backend
+            // records the ticket so membership is a real shared record.
+            runMutation { client, token in
+                try await client.buyTicket(id: roomID.uuidString, token: token)
+            }
+        }
     }
 
     /// Creates an event and steps in as its host. A few known people
@@ -641,20 +1087,66 @@ final class CardexStore {
             city: city,
             blurb: blurb,
             imageName: imageName,
-            distanceMiles: (Double.random(in: 0.3...2.5) * 10).rounded() / 10,
+            // No location services: beta rooms carry no fabricated distance.
+            distanceMiles: mode == .beta ? 0 : (Double.random(in: 0.3...2.5) * 10).rounded() / 10,
             liveCount: 1,
             access: access,
             membership: .joined,
             attendeeIDs: [owner.id],
             hostID: owner.id,
             ticketPrice: access == .ticketed ? ticketPrice : nil,
-            pendingAttendeeIDs: pool.prefix(3).map(\.id)
+            // No fabricated door queue in the beta — real requests arrive
+            // through the backend.
+            pendingAttendeeIDs: mode == .beta ? [] : pool.prefix(3).map(\.id)
         )
         rooms.insert(room, at: 0)
         activity.insert(
             ActivityItem(card: owner, kind: .eventCreated, detail: name, date: Date()),
             at: 0
         )
+
+        if mode == .beta {
+            let input = CreateRoomInput(
+                name: name,
+                venue: venue,
+                city: city,
+                blurb: blurb,
+                imageName: imageName,
+                access: access.rawValue,
+                ticketPrice: access == .ticketed ? ticketPrice : nil,
+            )
+            let localID = room.id
+            Task { [weak self] in
+                guard let self, let auth = self.auth else { return }
+                do {
+                    let token = try await auth.ensureFreshToken()
+                    let roomID = try await BackendClient.shared.createRoom(input, token: token)
+                    if let index = self.rooms.firstIndex(where: { $0.id == localID }) {
+                        let old = self.rooms[index]
+                        self.rooms[index] = Room(
+                            id: UUID(uuidString: roomID) ?? old.id,
+                            name: old.name,
+                            venue: old.venue,
+                            city: old.city,
+                            blurb: old.blurb,
+                            imageName: old.imageName,
+                            distanceMiles: 0,
+                            liveCount: 1,
+                            access: old.access,
+                            membership: .joined,
+                            attendeeIDs: [self.owner.id],
+                            hostID: self.owner.id,
+                            ticketPrice: old.ticketPrice,
+                            pendingAttendeeIDs: [],
+                            isBroadcasting: false,
+                        )
+                    }
+                    await self.refresh()
+                } catch {
+                    self.betaError = self.userMessage(for: error)
+                }
+            }
+        }
         return room
     }
 
@@ -671,12 +1163,21 @@ final class CardexStore {
                 at: 0
             )
         }
+        if mode == .beta {
+            runMutation { client, token in
+                try await client.doorDecision(room: roomID.uuidString, user: cardID.uuidString, approve: true, token: token)
+            }
+        }
     }
 
     /// Host declines someone waiting at the door.
     func denyEntry(roomID: UUID, cardID: UUID) {
         guard let index = rooms.firstIndex(where: { $0.id == roomID }) else { return }
         rooms[index].pendingAttendeeIDs.removeAll { $0 == cardID }
+        guard mode == .beta else { return }
+        runMutation { client, token in
+            try await client.doorDecision(room: roomID.uuidString, user: cardID.uuidString, approve: false, token: token)
+        }
     }
 
     /// Instantly moves the user into another room, attending remotely.
@@ -689,12 +1190,21 @@ final class CardexStore {
         rooms[index].membership = .none
         rooms[index].isBroadcasting = false
         remoteRoomIDs.remove(roomID)
+        guard mode == .beta else { return }
+        runMutation { client, token in
+            try await client.leaveRoom(id: roomID.uuidString, token: token)
+        }
     }
 
     /// Host starts or stops a live broadcast of their event.
     func toggleBroadcast(roomID: UUID) {
         guard let index = rooms.firstIndex(where: { $0.id == roomID }) else { return }
         rooms[index].isBroadcasting.toggle()
+        guard mode == .beta else { return }
+        let on = rooms[index].isBroadcasting
+        runMutation { client, token in
+            try await client.setBroadcast(room: roomID.uuidString, on: on, token: token)
+        }
     }
 
     private func joinRoom(at index: Int, remotely: Bool) {
@@ -715,6 +1225,10 @@ final class CardexStore {
         guard let index = posts.firstIndex(where: { $0.id == postID }) else { return }
         posts[index].hasApplauded.toggle()
         posts[index].applauds += posts[index].hasApplauded ? 1 : -1
+        guard mode == .beta else { return }
+        runMutation { client, token in
+            try await client.toggleApplause(post: postID.uuidString, token: token)
+        }
     }
 
     func publishPost(body: String, audience: FeedPost.Audience, imageName: String?) {
@@ -726,6 +1240,15 @@ final class CardexStore {
             audience: audience
         )
         posts.insert(post, at: 0)
+        guard mode == .beta else { return }
+        runMutation { client, token in
+            try await client.createPost(
+                body: body,
+                audience: audience,
+                imageName: imageName,
+                token: token,
+            )
+        }
     }
 
     func postStory(imageName: String, caption: String, imageData: Data? = nil) {
@@ -734,6 +1257,7 @@ final class CardexStore {
             at: 0
         )
         persistOwner()
+        publishOwnerCard()
     }
 
     // MARK: - Persistence

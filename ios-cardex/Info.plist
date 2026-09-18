@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- OAuth callback scheme for Rork Auth (ASWebAuthenticationSession).
+	     rork-<EXPO_PUBLIC_PROJECT_ID> — keep in sync with CardexConfig.
+	     Lives OUTSIDE the Cardex/ synchronized folder so it is not also
+	     copied as a bundle resource. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>app.rork.cardex.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>rork-p8bgff7cw7kasw6687yah</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
