@@ -91,11 +91,22 @@ final class CardexUITests: XCTestCase {
         }
         XCTAssertTrue(navBar.waitForExistence(timeout: 5), "Messages inbox did not open")
 
-        // Seeded thread with a connection (Sarah Okafor).
-        let thread = app.buttons["inbox-row"]
+        // Seeded threads with connections (Sarah Okafor, Daniel Ruiz, Tom Reilly).
+        let thread = app.buttons["inbox-row"].firstMatch
         let threadByName = app.staticTexts["Sarah Okafor"]
         let foundThread = thread.waitForExistence(timeout: 6) || threadByName.waitForExistence(timeout: 3)
-        XCTAssertTrue(foundThread, "Seeded conversation missing from inbox")
+        if !foundThread {
+            // Diagnostic payload so a failure pinpoints the state on screen.
+            let diagnostics = [
+                "emptyState=\(app.staticTexts["No conversations yet"].exists)",
+                "sarahAnywhere=\(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Sarah'")).firstMatch.exists)",
+                "rowButtons=\(app.buttons.matching(identifier: "inbox-row").count)",
+                "navBar=\(app.navigationBars["Messages"].exists)",
+                "anyButtons=\(app.buttons.count)",
+            ].joined(separator: ", ")
+            XCTFail("Seeded conversation missing from inbox. [\(diagnostics)]")
+            return
+        }
         (thread.exists ? thread : threadByName).tap()
 
         let field = app.textViews.firstMatch

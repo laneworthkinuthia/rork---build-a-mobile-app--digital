@@ -6,7 +6,9 @@ struct CardEditorView: View {
     @Environment(CardexStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
-    @State private var draft: BusinessCard = SampleData.makeOwner()
+    /// Starts blank; `.onAppear` copies the real owner card. Sample data must
+    /// never appear in the beta editor, even for a frame.
+    @State private var draft: BusinessCard = CardexStore.placeholderCard()
     @State private var isFlipped = false
     @State private var section: Section = .identity
     @State private var isShowingPhotoSources = false

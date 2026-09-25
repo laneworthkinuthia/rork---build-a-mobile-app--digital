@@ -84,9 +84,17 @@ nonisolated enum SampleData {
         ]
     }
 
+    /// Deterministic IDs for the sample cast. Connections and seeded messages
+    /// are built from separate `makeContacts()` calls, so the IDs must be
+    /// stable across calls or message threads never match their connection.
+    private static func castID(_ n: Int) -> UUID {
+        UUID(uuidString: String(format: "ACE00000-0000-4000-8000-%012d", n))!
+    }
+
     static func makeContacts() -> [BusinessCard] {
         [
             BusinessCard(
+                id: castID(1),
                 name: "Sarah Okafor",
                 title: "Creative Director",
                 company: "Studio OK",
@@ -120,6 +128,7 @@ nonisolated enum SampleData {
                 ]
             ),
             BusinessCard(
+                id: castID(2),
                 name: "Daniel Ruiz",
                 title: "Staff Engineer",
                 company: "Meridian Labs",
@@ -140,6 +149,7 @@ nonisolated enum SampleData {
                 visibility: .privateMode
             ),
             BusinessCard(
+                id: castID(3),
                 name: "James Park",
                 title: "Investment Associate",
                 company: "Harbourline Capital",
@@ -159,6 +169,7 @@ nonisolated enum SampleData {
                 visibility: .privateMode
             ),
             BusinessCard(
+                id: castID(4),
                 name: "Elena Vasquez",
                 title: "Growth Lead",
                 company: "Fin+",
@@ -186,6 +197,7 @@ nonisolated enum SampleData {
                 ]
             ),
             BusinessCard(
+                id: castID(5),
                 name: "Marcus Webb",
                 title: "Founder",
                 company: "Loop",
@@ -213,6 +225,7 @@ nonisolated enum SampleData {
                 ]
             ),
             BusinessCard(
+                id: castID(6),
                 name: "Priya Nair",
                 title: "Partner",
                 company: "Arc Capital",
@@ -240,6 +253,7 @@ nonisolated enum SampleData {
                 ]
             ),
             BusinessCard(
+                id: castID(7),
                 name: "Tom Reilly",
                 title: "Chief Technology Officer",
                 company: "Sparkline",

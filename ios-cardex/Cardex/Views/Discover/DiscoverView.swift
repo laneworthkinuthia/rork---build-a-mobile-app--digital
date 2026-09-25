@@ -50,8 +50,8 @@ struct DiscoverView: View {
                             .padding(.horizontal, Theme.margin)
                         }
 
-                        // Rooms are sample data for now; no location services
-                        // are used, so no proximity is implied.
+                        // No location services are used, so no proximity is
+                        // implied (beta rooms carry no fabricated distance).
                         SectionHeader(title: "Rooms")
 
                         if rooms.isEmpty {

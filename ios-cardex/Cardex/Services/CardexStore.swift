@@ -271,7 +271,8 @@ final class CardexStore {
 
     // MARK: - Beta sync machinery
 
-    private static func placeholderCard() -> BusinessCard {
+    /// Blank card used as the beta starting point (never sample content).
+    static func placeholderCard() -> BusinessCard {
         BusinessCard(
             name: "", title: "", company: "", industry: "", tagline: "", location: "",
             photoName: "", palette: .indigo, monogram: "", details: []
