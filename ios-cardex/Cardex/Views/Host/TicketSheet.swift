@@ -11,6 +11,7 @@ struct TicketSheet: View {
     @State private var isProcessing = false
     @State private var isPurchased = false
     @State private var errorMessage: String?
+    @State private var isShowingPreviewNotice = false
 
     private var room: Room? { store.rooms.first { $0.id == roomID } }
 
@@ -109,6 +110,11 @@ struct TicketSheet: View {
         }
         .presentationDetents([.height(480)])
         .interactiveDismissDisabled(isProcessing)
+        .alert("Preview Mode", isPresented: $isShowingPreviewNotice) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(GuestPreviewConfig.accountRequiredMessage)
+        }
     }
 
     @ViewBuilder
@@ -156,6 +162,12 @@ struct TicketSheet: View {
     }
 
     private func processPayment(_ room: Room) {
+        // Guest preview never charges anything — purchasing needs an account.
+        guard !store.isGuestPreview else {
+            isShowingPreviewNotice = true
+            return
+        }
+
         isProcessing = true
         errorMessage = nil
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()

@@ -2,17 +2,29 @@ import SwiftUI
 
 /// Root shell. Beta mode: sign-in gate → onboarding → five-tab wallet, with
 /// connecting/offline states around the backend sync. Local mode (tests,
-/// previews, UI tests) keeps the original offline behaviour.
+/// previews, UI tests) keeps the original offline behaviour. Guest preview
+/// (development only, see `GuestPreviewConfig`) rides the local data path with
+/// isolated defaults and is entered from the sign-in gate.
 struct ContentView: View {
     @Environment(AuthManager.self) private var auth
-    @State private var store = CardexStore(
-        mode: ProcessInfo.processInfo.arguments.contains("UITEST_LOCAL") ? .local : .beta,
-    )
+    @State private var store: CardexStore
+    @State private var isGuestPreview: Bool
+    @State private var isConfirmingExitPreview = false
     @State private var selection: Tab = .cards
     @Environment(\.scenePhase) private var scenePhase
 
     enum Tab: Hashable {
         case cards, discover, live, feed, profile
+    }
+
+    init() {
+        let arguments = ProcessInfo.processInfo.arguments
+        let isGuest = GuestPreviewConfig.isRequested
+        // The UI-test harness and guest preview both ride the local data path;
+        // only guest preview gets the preview badge and isolated defaults.
+        let bootsLocal = isGuest || arguments.contains("UITEST_LOCAL")
+        _store = State(initialValue: CardexStore(mode: bootsLocal ? .local : .beta, isGuestPreview: isGuest))
+        _isGuestPreview = State(initialValue: isGuest)
     }
 
     var body: some View {
@@ -45,6 +57,25 @@ struct ContentView: View {
         } message: {
             Text(store.betaError ?? "")
         }
+        .onReceive(NotificationCenter.default.publisher(for: .guestPreviewExit)) { _ in
+            exitGuestPreview()
+        }
+    }
+
+    // MARK: - Guest preview (development only — see GuestPreviewConfig)
+
+    /// Swaps in a guest store: local sample data, isolated defaults, no auth.
+    /// Guarded by `isAvailable`, which is false in release builds.
+    private func enterGuestPreview() {
+        guard GuestPreviewConfig.isAvailable else { return }
+        store = CardexStore(mode: .local, isGuestPreview: true)
+        isGuestPreview = true
+    }
+
+    private func exitGuestPreview() {
+        isConfirmingExitPreview = false
+        store = CardexStore(mode: .beta)
+        isGuestPreview = false
     }
 
     // MARK: - Local mode (tests / previews)
@@ -66,7 +97,8 @@ struct ContentView: View {
         if auth.isRestoringSession {
             splash(message: nil)
         } else if auth.user == nil {
-            SignInGateView()
+            let guestAction: (() -> Void)? = GuestPreviewConfig.isAvailable ? { enterGuestPreview() } : nil
+            SignInGateView(onContinueAsGuest: guestAction)
         } else if case .offline(let message) = store.syncPhase, store.connections.isEmpty, store.rooms.isEmpty {
             // Nothing cached and the backend is unreachable — offer a retry.
             offlineView(message)
@@ -108,6 +140,39 @@ struct ContentView: View {
                 .tag(Tab.profile)
         }
         .tint(Theme.accent)
+        .overlay(alignment: .bottom) {
+            if isGuestPreview { previewBadge }
+        }
+    }
+
+    /// Persistent, unmissable marker that the session is a local preview and
+    /// not a real Cardex account. Tapping it offers to exit.
+    private var previewBadge: some View {
+        Button { isConfirmingExitPreview = true } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "eye.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Preview Mode · local data only")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Theme.accent.opacity(0.92), in: .capsule)
+            .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
+        }
+        .buttonStyle(.pressable)
+        .padding(.bottom, 58)
+        .confirmationDialog(
+            "Exit Preview Mode?",
+            isPresented: $isConfirmingExitPreview,
+            titleVisibility: .visible,
+        ) {
+            Button("Exit to Sign In") { exitGuestPreview() }
+            Button("Keep Exploring", role: .cancel) {}
+        } message: {
+            Text("Preview mode uses local sample data only. Exiting returns you to the sign-in screen.")
+        }
     }
 
     private func splash(message: String?) -> some View {

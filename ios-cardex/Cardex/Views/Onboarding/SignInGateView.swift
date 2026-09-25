@@ -4,8 +4,12 @@ import AuthenticationServices
 /// The first thing a beta user sees: create an account or return to one.
 /// Apple and Google sign-in through Rork Auth — the backend identity every
 /// card, connection and message belongs to.
+///
+/// The optional guest entry (`onContinueAsGuest`) is passed only in DEBUG
+/// builds (see `GuestPreviewConfig`); release builds compile the button out.
 struct SignInGateView: View {
     @Environment(AuthManager.self) private var auth
+    var onContinueAsGuest: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 28) {
@@ -80,6 +84,33 @@ struct SignInGateView: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 12)
                 }
+
+                // Development-only guest entry. `#if DEBUG` guarantees the
+                // button (and the only path into preview mode) does not exist
+                // in release / TestFlight builds.
+                #if DEBUG
+                if let onContinueAsGuest {
+                    Button(action: onContinueAsGuest) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "eye")
+                            Text("Continue as Guest — Preview Cardex")
+                                .font(.system(size: 15, weight: .medium))
+                        }
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14)
+                                .strokeBorder(Theme.hairline, lineWidth: 0.8)
+                        }
+                    }
+                    .buttonStyle(.pressable)
+
+                    Text("Preview only — local sample data, no account is created.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                #endif
             }
             .padding(.horizontal, Theme.margin)
 

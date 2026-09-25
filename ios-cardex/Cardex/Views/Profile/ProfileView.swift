@@ -9,6 +9,7 @@ struct ProfileView: View {
     @State private var isShowingExchange = false
     @State private var isFlipped = false
     @State private var isConfirmingDelete = false
+    @State private var isShowingPreviewAccountNotice = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -199,10 +200,64 @@ struct ProfileView: View {
         .accessibilityIdentifier(identifier ?? "")
     }
 
+    /// Guest preview replaces account controls with an explicit notice: no
+    /// account exists here, so nothing can sign out, delete or touch the
+    /// backend (see `GuestPreviewConfig`).
+    @ViewBuilder
+    private var guestPreviewAccountSection: some View {
+        VStack(spacing: 12) {
+            SectionHeader(title: "Account")
+
+            VStack(spacing: 0) {
+                HStack(spacing: 13) {
+                    Image(systemName: "eye.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Theme.accent)
+                        .frame(width: 40, height: 40)
+                        .background(Theme.accentSoft, in: .rect(cornerRadius: 12))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Preview Mode")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(Theme.textPrimary)
+                        Text("Exploring with local sample data. No account exists and nothing is shared.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.textSecondary)
+                            .multilineTextAlignment(.leading)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+
+                Divider().overlay(Theme.hairline)
+
+                accountAction("person.crop.circle.badge.exclamationmark", "Account Features") {
+                    isShowingPreviewAccountNotice = true
+                }
+
+                Divider().overlay(Theme.hairline)
+
+                accountAction("arrow.uturn.backward.square", "Exit Preview") {
+                    NotificationCenter.default.post(name: .guestPreviewExit, object: nil)
+                }
+            }
+            .panel()
+        }
+        .alert("Preview Mode", isPresented: $isShowingPreviewAccountNotice) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(GuestPreviewConfig.accountRequiredMessage)
+        }
+    }
+
     /// Beta account controls: identity, blocked people, sign out, delete.
     @ViewBuilder
     private var accountSection: some View {
-        if store.mode == .beta {
+        if store.isGuestPreview {
+            guestPreviewAccountSection
+        } else if store.mode == .beta {
             VStack(spacing: 12) {
                 SectionHeader(title: "Account")
 

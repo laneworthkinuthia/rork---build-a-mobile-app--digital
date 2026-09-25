@@ -67,6 +67,10 @@ final class CardexStore {
     }
 
     let mode: SyncMode
+    /// True only for the development-only Guest/Preview store: local sample
+    /// data, isolated defaults, no backend and no real account (see
+    /// `GuestPreviewConfig`). Never true for a signed-in beta user.
+    let isGuestPreview: Bool
     private(set) var syncPhase: SyncPhase = .idle
     /// One-shot error surface for failed mutations, shown as an alert.
     var betaError: String?
@@ -99,10 +103,16 @@ final class CardexStore {
         defaults: UserDefaults = .standard,
         messageRepository: (any MessageRepository)? = nil,
         paymentProcessor: (any PaymentProcessing)? = nil,
-        mode: SyncMode = .local
+        mode: SyncMode = .local,
+        isGuestPreview: Bool = false
     ) {
-        self.defaults = defaults
-        self.mode = mode
+        // Guest preview always runs on the local data path and keeps its own
+        // defaults suite, so preview state never mixes with a beta user's.
+        self.mode = isGuestPreview ? .local : mode
+        self.isGuestPreview = isGuestPreview
+        self.defaults = isGuestPreview
+            ? (UserDefaults(suiteName: GuestPreviewConfig.defaultsSuiteName) ?? defaults)
+            : defaults
 
         // UI-test hooks: start from a clean slate, optionally skipping onboarding.
         let arguments = ProcessInfo.processInfo.arguments
@@ -480,7 +490,11 @@ final class CardexStore {
         betaError = nil
         activeThreadPartnerID = nil
         hasTrackedAppOpen = false
-        defaults.removePersistentDomain(forName: Bundle.main.bundleIdentifier ?? "Cardex")
+        // Guest preview persists inside its own suite, not the app's domain.
+        let purgeDomain = isGuestPreview
+            ? GuestPreviewConfig.defaultsSuiteName
+            : Bundle.main.bundleIdentifier ?? "Cardex"
+        defaults.removePersistentDomain(forName: purgeDomain)
         if mode == .beta {
             owner = Self.placeholderCard()
             connections = []
